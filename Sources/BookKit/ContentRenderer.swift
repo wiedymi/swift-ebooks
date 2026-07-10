@@ -11,9 +11,11 @@ public final class ContentRenderer: Navigator {
 
     public let book: Book
     public let mode: RenderMode
-    public let events: AsyncStream<NavigatorEvent>
+    public var events: AsyncStream<NavigatorEvent> {
+        eventHub.stream()
+    }
 
-    private let eventsContinuation: AsyncStream<NavigatorEvent>.Continuation
+    private let eventHub = EventHub<NavigatorEvent>()
     private let reader: Reader
     private let reflowLayout: ReflowLayout?
     private let pdfAdapter: PDFPageAdapter?
@@ -32,19 +34,13 @@ public final class ContentRenderer: Navigator {
 
     public init(
         book: Book,
-        options _: OpenOptions = OpenOptions(),
+        options: OpenOptions = OpenOptions(),
         stateStore: (any ReaderStateStore)? = nil,
         linkPolicy: any LinkPolicy = DefaultLinkPolicy(),
         reflowBridge: (any ReflowBridge)? = nil,
         preferences: ReaderPreferences = .default
     ) throws {
-        var streamContinuation: AsyncStream<NavigatorEvent>.Continuation!
-        events = AsyncStream<NavigatorEvent> { continuation in
-            streamContinuation = continuation
-        }
-        eventsContinuation = streamContinuation
-
-        self.book = Normalize.run(book)
+        self.book = Normalize.run(book, allowsNetwork: options.allowsNetwork)
         reader = Reader(book: self.book, stateStore: stateStore, preferences: preferences)
         self.linkPolicy = linkPolicy
         embeddedAssetDataURLByID = Self.makeEmbeddedAssetDataURLMap(assets: self.book.assets)
@@ -59,7 +55,7 @@ public final class ContentRenderer: Navigator {
             guard let reflowBridge else {
                 throw BookError.renderingFailed("Reflow rendering requires a bridge implementation")
             }
-            let layout = ReflowLayout(bridge: reflowBridge)
+            let layout = ReflowLayout(bridge: reflowBridge, options: options)
             reflowLayout = layout
             startLayoutEventLoop(layout: layout)
         }
@@ -67,7 +63,6 @@ public final class ContentRenderer: Navigator {
 
     deinit {
         layoutEventTask?.cancel()
-        eventsContinuation.finish()
     }
 
     public func renderChapter(
@@ -81,7 +76,7 @@ public final class ContentRenderer: Navigator {
         nextPreferences.theme = theme
         nextPreferences.typography = typography
         try await reader.setPreferences(nextPreferences)
-        eventsContinuation.yield(.preferencesChanged(nextPreferences))
+        eventHub.yield(.preferencesChanged(nextPreferences))
 
         try await renderChapterInternal(
             at: index,
@@ -93,30 +88,30 @@ public final class ContentRenderer: Navigator {
 
     public func nextPage() async throws {
         let before = await currentPosition()
-        try await reader.nextPage()
-        let target = await reader.position
+        let target = nextPageTarget(from: before)
+        guard target != before else { return }
         try await navigateWithoutHistory(to: target)
         let after = await currentPosition()
         if after != before {
-            eventsContinuation.yield(.locatorChanged(book.locator(for: after)))
+            eventHub.yield(.locatorChanged(book.locator(for: after)))
         }
     }
 
     public func previousPage() async throws {
         let before = await currentPosition()
-        try await reader.previousPage()
-        let target = await reader.position
+        let target = previousPageTarget(from: before)
+        guard target != before else { return }
         try await navigateWithoutHistory(to: target)
         let after = await currentPosition()
         if after != before {
-            eventsContinuation.yield(.locatorChanged(book.locator(for: after)))
+            eventHub.yield(.locatorChanged(book.locator(for: after)))
         }
     }
 
     public func go(to position: Position) async throws {
         try await navigateWithoutHistory(to: position)
         let locator = await currentLocator()
-        eventsContinuation.yield(.locatorChanged(locator))
+        eventHub.yield(.locatorChanged(locator))
     }
 
     public func go(to locator: Locator) async throws {
@@ -124,7 +119,16 @@ public final class ContentRenderer: Navigator {
         try await navigateWithoutHistory(to: locator.position)
         let after = await currentPosition()
         recordHistoryTransition(from: before, to: after)
-        eventsContinuation.yield(.locatorChanged(book.locator(for: after)))
+        eventHub.yield(.locatorChanged(book.locator(for: after)))
+    }
+
+    public func go(to navigationItem: TOCNode) async throws {
+        guard let locator = book.locator(forNavigationHref: navigationItem.href) else {
+            throw BookError.navigationFailed(
+                "Unable to resolve navigation destination: \(navigationItem.href)"
+            )
+        }
+        try await go(to: locator)
     }
 
     public func goBack() async throws -> Locator? {
@@ -142,7 +146,7 @@ public final class ContentRenderer: Navigator {
         emitHistoryChanged()
 
         let locator = await currentLocator()
-        eventsContinuation.yield(.locatorChanged(locator))
+        eventHub.yield(.locatorChanged(locator))
         return locator
     }
 
@@ -161,7 +165,7 @@ public final class ContentRenderer: Navigator {
         emitHistoryChanged()
 
         let locator = await currentLocator()
-        eventsContinuation.yield(.locatorChanged(locator))
+        eventHub.yield(.locatorChanged(locator))
         return locator
     }
 
@@ -204,13 +208,13 @@ public final class ContentRenderer: Navigator {
         let restoredPosition = await reader.position
         let restoredPreferences = await reader.currentPreferences()
 
-        eventsContinuation.yield(.preferencesChanged(restoredPreferences))
-        eventsContinuation.yield(.readingModeChanged(effectiveReadingMode(preferences: restoredPreferences)))
+        eventHub.yield(.preferencesChanged(restoredPreferences))
+        eventHub.yield(.readingModeChanged(effectiveReadingMode(preferences: restoredPreferences)))
 
         switch mode {
         case .pdf:
             currentChapterIndex = restoredPosition.spineIndex
-            eventsContinuation.yield(.locatorChanged(book.locator(for: restoredPosition)))
+            eventHub.yield(.locatorChanged(book.locator(for: restoredPosition)))
 
         case .reflow, .fixed:
             if let context = lastRenderContext {
@@ -228,7 +232,7 @@ public final class ContentRenderer: Navigator {
                 currentChapterIndex = restoredPosition.spineIndex
                 try await reader.go(to: restoredPosition)
             }
-            eventsContinuation.yield(.locatorChanged(book.locator(for: restoredPosition)))
+            eventHub.yield(.locatorChanged(book.locator(for: restoredPosition)))
         }
     }
 
@@ -257,10 +261,10 @@ public final class ContentRenderer: Navigator {
 
     public func setPreferences(_ preferences: ReaderPreferences) async throws {
         try await reader.setPreferences(preferences)
-        eventsContinuation.yield(.preferencesChanged(preferences))
+        eventHub.yield(.preferencesChanged(preferences))
 
         guard let layout = reflowLayout else {
-            eventsContinuation.yield(.readingModeChanged(effectiveReadingMode(preferences: preferences)))
+            eventHub.yield(.readingModeChanged(effectiveReadingMode(preferences: preferences)))
             return
         }
 
@@ -269,7 +273,7 @@ public final class ContentRenderer: Navigator {
         try await layout.setReadingMode(effectiveReadingMode(preferences: preferences))
         try await layout.measurePages()
 
-        eventsContinuation.yield(.readingModeChanged(effectiveReadingMode(preferences: preferences)))
+        eventHub.yield(.readingModeChanged(effectiveReadingMode(preferences: preferences)))
     }
 
     public func readingMode() async -> ReadingMode {
@@ -301,17 +305,28 @@ public final class ContentRenderer: Navigator {
 
     public func setAccessibility(_ settings: ReaderAccessibilitySettings) async throws {
         accessibilitySettings = settings
-        eventsContinuation.yield(.accessibilityChanged(settings))
+        eventHub.yield(.accessibilityChanged(settings))
 
         let prefs = await reader.currentPreferences()
         guard let layout = reflowLayout else {
-            eventsContinuation.yield(.readingModeChanged(effectiveReadingMode(preferences: prefs)))
+            eventHub.yield(.readingModeChanged(effectiveReadingMode(preferences: prefs)))
             return
         }
 
+        try await layout.setAccessibility(settings)
         try await layout.setReadingMode(effectiveReadingMode(preferences: prefs))
         try await layout.measurePages()
-        eventsContinuation.yield(.readingModeChanged(effectiveReadingMode(preferences: prefs)))
+        eventHub.yield(.readingModeChanged(effectiveReadingMode(preferences: prefs)))
+    }
+
+    public func callBridgeCommand(
+        _ name: String,
+        payload: BridgeValue = .null
+    ) async throws -> BridgeValue {
+        guard let reflowLayout else {
+            throw BookError.renderingFailed("Custom bridge commands are unavailable for PDF rendering")
+        }
+        return try await reflowLayout.callBridgeCommand(name, payload: payload)
     }
 
     public func setDecorations(_ decorations: [Decoration], in group: DecorationGroup) async throws {
@@ -346,7 +361,7 @@ public final class ContentRenderer: Navigator {
     public func handleLink(_ url: URL, context: LinkContext) async throws -> LinkAction {
         let action = await linkPolicy.action(for: url, context: context)
         let kind = ResolveLinks.classify(url)
-        eventsContinuation.yield(.linkActivated(url: url, kind: kind, action: action))
+        eventHub.yield(.linkActivated(url: url, kind: kind, action: action))
 
         guard action == .follow else {
             return action
@@ -358,10 +373,9 @@ public final class ContentRenderer: Navigator {
         case .anchor:
             if let anchor = url.fragment {
                 try await reflowLayout?.goToAnchor(anchor)
-                if var position = reflowLayout?.position() {
-                    position.fragment = anchor
-                    try await reader.go(to: position)
-                }
+                var position = await reader.position
+                position.fragment = anchor
+                try await reader.go(to: position)
             }
 
         case .spine:
@@ -370,10 +384,9 @@ public final class ContentRenderer: Navigator {
             }
             if let anchor = url.fragment {
                 try await reflowLayout?.goToAnchor(anchor)
-                if var position = reflowLayout?.position() {
-                    position.fragment = anchor
-                    try await reader.go(to: position)
-                }
+                var position = await reader.position
+                position.fragment = anchor
+                try await reader.go(to: position)
             }
 
         case .external, .unsupported:
@@ -382,7 +395,7 @@ public final class ContentRenderer: Navigator {
 
         let after = await currentPosition()
         recordHistoryTransition(from: before, to: after)
-        eventsContinuation.yield(.locatorChanged(book.locator(for: after)))
+        eventHub.yield(.locatorChanged(book.locator(for: after)))
 
         return action
     }
@@ -406,7 +419,7 @@ public final class ContentRenderer: Navigator {
                 let position = adapter.position(forPageIndex: index)
                 currentChapterIndex = position.spineIndex
                 try await reader.go(to: position)
-                eventsContinuation.yield(.locatorChanged(book.locator(for: position)))
+                eventHub.yield(.locatorChanged(book.locator(for: position)))
             }
 
         case .reflow, .fixed:
@@ -433,6 +446,7 @@ public final class ContentRenderer: Navigator {
             )
 
             let effectiveMode = effectiveReadingMode(preferences: preferences)
+            try await layout.setAccessibility(accessibilitySettings)
             try await layout.setReadingMode(effectiveMode)
             try await applyDecorationsForCurrentChapter()
 
@@ -440,8 +454,8 @@ public final class ContentRenderer: Navigator {
                 try await reader.go(to: layoutPosition)
             }
 
-            eventsContinuation.yield(.readingModeChanged(effectiveMode))
-            eventsContinuation.yield(.locatorChanged(book.locator(for: await reader.position)))
+            eventHub.yield(.readingModeChanged(effectiveMode))
+            eventHub.yield(.locatorChanged(book.locator(for: await reader.position)))
         }
     }
 
@@ -514,6 +528,54 @@ public final class ContentRenderer: Navigator {
         return preferences.readingMode
     }
 
+    private func nextPageTarget(from position: Position) -> Position {
+        if mode == .pdf {
+            guard position.spineIndex + 1 < book.readingOrder.count else {
+                return position
+            }
+            return Position(spineIndex: position.spineIndex + 1, progression: 0)
+        }
+
+        let pageProgressions = reflowLayout?.pageMap().chapterProgressMap[position.spineIndex] ?? []
+        if let progression = pageProgressions
+            .sorted()
+            .first(where: { $0 > position.progression + 0.0001 })
+        {
+            return Position(spineIndex: position.spineIndex, progression: progression)
+        }
+        if position.spineIndex + 1 < book.readingOrder.count {
+            return Position(spineIndex: position.spineIndex + 1, progression: 0)
+        }
+        if position.progression < 1 {
+            return Position(spineIndex: position.spineIndex, progression: 1)
+        }
+        return position
+    }
+
+    private func previousPageTarget(from position: Position) -> Position {
+        if mode == .pdf {
+            guard position.spineIndex > 0 else {
+                return position
+            }
+            return Position(spineIndex: position.spineIndex - 1, progression: 0)
+        }
+
+        let pageProgressions = reflowLayout?.pageMap().chapterProgressMap[position.spineIndex] ?? []
+        if let progression = pageProgressions
+            .sorted()
+            .last(where: { $0 < position.progression - 0.0001 })
+        {
+            return Position(spineIndex: position.spineIndex, progression: progression)
+        }
+        if position.spineIndex > 0 {
+            return Position(spineIndex: position.spineIndex - 1, progression: 1)
+        }
+        if position.progression > 0 {
+            return Position(spineIndex: 0, progression: 0)
+        }
+        return position
+    }
+
     private func recordHistoryTransition(from before: Position, to after: Position) {
         guard before != after else {
             return
@@ -533,7 +595,7 @@ public final class ContentRenderer: Navigator {
     }
 
     private func emitHistoryChanged() {
-        eventsContinuation.yield(
+        eventHub.yield(
             .historyChanged(
                 canGoBack: !backHistory.isEmpty,
                 canGoForward: !forwardHistory.isEmpty
@@ -553,19 +615,44 @@ public final class ContentRenderer: Navigator {
 
     private func handleLayoutEvent(_ event: ReflowLayoutEvent) async {
         switch event {
+        case .ready:
+            eventHub.yield(.ready)
+
+        case let .paginationChanged(pageMap):
+            eventHub.yield(.paginationChanged(pageMap))
+
         case let .positionChanged(position):
             await reader.sync(to: position)
             currentChapterIndex = position.spineIndex
-            eventsContinuation.yield(.locatorChanged(book.locator(for: position)))
+            eventHub.yield(.locatorChanged(book.locator(for: position)))
 
         case let .decorationTapped(id, group):
             let matched = decorationsByGroup[group]?.first(where: { $0.id == id })
             let event = DecorationTapEvent(id: id, group: group, locator: matched?.locator)
             lastDecorationTapEvent = event
-            eventsContinuation.yield(.decorationTapped(event))
+            eventHub.yield(.decorationTapped(event))
 
-        case .ready, .paginationChanged, .selectionChanged, .contentHeightChanged, .linkTapped:
-            break
+        case let .linkTapped(url, _):
+            let href = book.readingOrder.indices.contains(currentChapterIndex)
+                ? book.readingOrder[currentChapterIndex].href
+                : ""
+            do {
+                _ = try await handleLink(url, context: LinkContext(currentChapterHref: href))
+            } catch {
+                eventHub.yield(.error(BookError.from(error)))
+            }
+
+        case let .custom(name, payload):
+            eventHub.yield(.bridgeMessage(name: name, payload: payload))
+
+        case let .selectionChanged(range, text):
+            let locator = await currentLocator()
+            eventHub.yield(
+                .selectionChanged(ReaderSelection(range: range, text: text, locator: locator))
+            )
+
+        case let .contentHeightChanged(value):
+            eventHub.yield(.contentHeightChanged(value))
         }
     }
 

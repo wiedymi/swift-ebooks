@@ -4,45 +4,109 @@ import Foundation
 import WebKit
 
 @MainActor
-public final class WebViewReflowBridge: NSObject, ReflowBridge, WKScriptMessageHandler {
+public struct WebViewReflowConfiguration {
+    public var plugins: [ReflowScriptPlugin]
+    public var customizeWebViewConfiguration: (@MainActor (WKWebViewConfiguration) -> Void)?
+
+    public init(
+        plugins: [ReflowScriptPlugin] = [],
+        customizeWebViewConfiguration: (@MainActor (WKWebViewConfiguration) -> Void)? = nil
+    ) {
+        self.plugins = plugins
+        self.customizeWebViewConfiguration = customizeWebViewConfiguration
+    }
+}
+
+@MainActor
+public final class WebViewReflowBridge: NSObject, ReflowBridge, WKScriptMessageHandler, WKNavigationDelegate {
     private static let handlerName = "bookkitBridge"
 
     public let webView: WKWebView
-    public let events: AsyncStream<ReflowBridgeEvent>
+    public var events: AsyncStream<ReflowBridgeEvent> {
+        eventHub.stream()
+    }
 
-    private let continuation: AsyncStream<ReflowBridgeEvent>.Continuation
+    private let eventHub = EventHub<ReflowBridgeEvent>()
     private let messageHandlerProxy: WeakScriptMessageHandler
+    private var allowsNetwork = false
+    private var isDocumentReady = false
+    private var documentLoadError: Error?
+    private var documentReadyWaiters: [CheckedContinuation<Void, Error>] = []
+    private var documentNavigation: WKNavigation?
 
-    public override init() {
-        var streamContinuation: AsyncStream<ReflowBridgeEvent>.Continuation!
-        events = AsyncStream<ReflowBridgeEvent> { continuation in
-            streamContinuation = continuation
-        }
-        continuation = streamContinuation
+    public init(configuration bridgeConfiguration: WebViewReflowConfiguration = .init()) {
         messageHandlerProxy = WeakScriptMessageHandler()
 
         let config = WKWebViewConfiguration()
+        config.websiteDataStore = .nonPersistent()
         let pagePreferences = WKWebpagePreferences()
         pagePreferences.allowsContentJavaScript = false
         config.defaultWebpagePreferences = pagePreferences
+        bridgeConfiguration.customizeWebViewConfiguration?(config)
 
-        let controller = WKUserContentController()
-        let script = WKUserScript(source: Self.bootstrapScript, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        let controller = config.userContentController
+        let script = WKUserScript(
+            source: Self.bootstrapScript,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true,
+            in: .defaultClient
+        )
         controller.addUserScript(script)
-        config.userContentController = controller
+        for plugin in bridgeConfiguration.plugins {
+            controller.addUserScript(
+                WKUserScript(
+                    source: plugin.source,
+                    injectionTime: .atDocumentStart,
+                    forMainFrameOnly: true,
+                    in: .defaultClient
+                )
+            )
+        }
 
         webView = WKWebView(frame: .zero, configuration: config)
 
         super.init()
 
         messageHandlerProxy.delegate = self
-        controller.add(messageHandlerProxy, name: Self.handlerName)
+        controller.add(messageHandlerProxy, contentWorld: .defaultClient, name: Self.handlerName)
+        webView.navigationDelegate = self
 
-        webView.loadHTMLString("<!doctype html><html><head><meta charset='utf-8'></head><body></body></html>", baseURL: nil)
+        documentNavigation = webView.loadHTMLString(
+            "<!doctype html><html><head><meta charset='utf-8'>"
+                + "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+                + "</head><body></body></html>",
+            baseURL: nil
+        )
     }
 
-    deinit {
-        continuation.finish()
+    public func webView(_: WKWebView, didFinish navigation: WKNavigation?) {
+        guard navigation === documentNavigation else {
+            return
+        }
+        isDocumentReady = true
+        documentLoadError = nil
+        documentNavigation = nil
+        let waiters = documentReadyWaiters
+        documentReadyWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
+
+    public func webView(
+        _: WKWebView,
+        didFail _: WKNavigation?,
+        withError error: Error
+    ) {
+        failDocumentLoad(error)
+    }
+
+    public func webView(
+        _: WKWebView,
+        didFailProvisionalNavigation _: WKNavigation?,
+        withError error: Error
+    ) {
+        failDocumentLoad(error)
     }
 
     public func userContentController(_: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -54,15 +118,18 @@ public final class WebViewReflowBridge: NSObject, ReflowBridge, WKScriptMessageH
             return
         }
 
-        continuation.yield(event)
+        eventHub.yield(event)
     }
 
     public func setContent(html: String, css: String, viewport: Viewport) async throws {
-        let safeHTML = SanitizeContent.run(html)
+        let safeHTML = SanitizeContent.run(html, allowsNetwork: allowsNetwork)
+        let safeCSS = SanitizeContent.css(css, allowsNetwork: allowsNetwork)
         let js = """
         (() => {
           const html = \(Self.jsString(safeHTML));
-          const css = \(Self.jsString(css));
+          const css = \(Self.jsString(safeCSS));
+          const context = { viewport: { width: \(viewport.width), height: \(viewport.height) } };
+          if (window.BookKitNativeEmitHook) window.BookKitNativeEmitHook('contentWillChange', context);
           if (!document.head) {
             const head = document.createElement('head');
             document.documentElement.appendChild(head);
@@ -83,11 +150,13 @@ public final class WebViewReflowBridge: NSObject, ReflowBridge, WKScriptMessageH
           document.body.innerHTML = html;
           document.body.style.margin = '0';
           document.body.style.padding = '0';
-          document.documentElement.style.width = '\(viewport.width)px';
-          document.documentElement.style.height = '\(viewport.height)px';
+          document.documentElement.style.setProperty('--bookkit-viewport-width', '\(viewport.width)px');
+          document.documentElement.style.setProperty('--bookkit-viewport-height', '\(viewport.height)px');
           window.scrollTo(0, 0);
           if (window.BookKitNativeApplyReadingMode) window.BookKitNativeApplyReadingMode();
+          if (window.BookKitNativeApplyAccessibility) window.BookKitNativeApplyAccessibility();
           if (window.BookKitNativeApplyDecorations) window.BookKitNativeApplyDecorations(window.__bookkitDecorations || []);
+          if (window.BookKitNativeEmitHook) window.BookKitNativeEmitHook('contentDidChange', context);
 
           if (window.BookKitNativeEmitReady) window.BookKitNativeEmitReady();
           if (window.BookKitNativeMeasurePages) window.BookKitNativeMeasurePages();
@@ -104,7 +173,7 @@ public final class WebViewReflowBridge: NSObject, ReflowBridge, WKScriptMessageH
           if (target) {
             target.scrollIntoView();
           }
-          if (window.BookKitNativeReportPosition) window.BookKitNativeReportPosition();
+          if (window.BookKitNativeReportPosition) window.BookKitNativeReportPosition(true);
         })();
         """
         try await evaluateJavaScript(js)
@@ -117,7 +186,9 @@ public final class WebViewReflowBridge: NSObject, ReflowBridge, WKScriptMessageH
           if (window.BookKitNativeGoToProgression) {
             window.BookKitNativeGoToProgression(\(clamped));
           }
-          if (window.BookKitNativeReportPosition) window.BookKitNativeReportPosition();
+          if (window.BookKitNativeReportPosition) {
+            window.BookKitNativeReportPosition(true, \(clamped));
+          }
         })();
         """
         try await evaluateJavaScript(js)
@@ -171,19 +242,71 @@ public final class WebViewReflowBridge: NSObject, ReflowBridge, WKScriptMessageH
         try await evaluateJavaScript(js)
     }
 
+    public func setAccessibility(_ settings: ReaderAccessibilitySettings) async throws {
+        let js = """
+        (() => {
+          window.__bookkitAccessibility = {
+            voiceOver: \(settings.isVoiceOverEnabled),
+            reducedMotion: \(settings.prefersReducedMotion),
+            announcesPositionChanges: \(settings.announcesPositionChanges)
+          };
+          if (window.BookKitNativeApplyAccessibility) {
+            window.BookKitNativeApplyAccessibility();
+          }
+        })();
+        """
+        try await evaluateJavaScript(js)
+    }
+
+    public func setNetworkAccessAllowed(_ allowed: Bool) async throws {
+        allowsNetwork = allowed
+    }
+
+    public func callPlugin(_ name: String, payload: BridgeValue = .null) async throws -> BridgeValue {
+        try await waitForDocumentReady()
+        let result = try await webView.callAsyncJavaScript(
+            "return await window.BookKitNativeDispatch(command, payload);",
+            arguments: [
+                "command": name,
+                "payload": payload.foundationValue,
+            ],
+            in: nil,
+            contentWorld: .defaultClient
+        )
+        guard let result else {
+            return .null
+        }
+        return BridgeValue(foundationValue: result) ?? .null
+    }
+
     public func measurePages() async throws {
         try await evaluateJavaScript("window.BookKitNativeMeasurePages && window.BookKitNativeMeasurePages();")
     }
 
     private func evaluateJavaScript(_ script: String) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            webView.evaluateJavaScript(script) { _, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                    return
-                }
-                continuation.resume(returning: ())
-            }
+        try await waitForDocumentReady()
+        _ = try await webView.evaluateJavaScript(script, in: nil, contentWorld: .defaultClient)
+    }
+
+    private func waitForDocumentReady() async throws {
+        if isDocumentReady {
+            return
+        }
+        if let documentLoadError {
+            throw BookError.renderingFailed(documentLoadError.localizedDescription)
+        }
+        try await withCheckedThrowingContinuation { continuation in
+            documentReadyWaiters.append(continuation)
+        }
+    }
+
+    private func failDocumentLoad(_ error: Error) {
+        documentLoadError = error
+        documentNavigation = nil
+        let waiters = documentReadyWaiters
+        documentReadyWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume(throwing: BookError.renderingFailed(error.localizedDescription))
         }
     }
 
@@ -222,12 +345,65 @@ public final class WebViewReflowBridge: NSObject, ReflowBridge, WKScriptMessageH
       window.__bookkitBridgeInstalled = true;
       window.__bookkitReadingMode = 'scroll';
       window.__bookkitDecorations = [];
+      window.__bookkitAccessibility = {
+        voiceOver: false,
+        reducedMotion: false,
+        announcesPositionChanges: false
+      };
 
       const post = payload => {
         try {
           window.webkit.messageHandlers.bookkitBridge.postMessage(payload);
         } catch (_) {
           // Ignore posting errors for non-hosted contexts.
+        }
+      };
+
+      const commandHandlers = new Map();
+      const lifecycleHandlers = new Map();
+      const normalizeName = name => String(name || '').trim();
+      window.BookKit = Object.freeze({
+        post(name, payload = null) {
+          const normalized = normalizeName(name);
+          if (!normalized) throw new TypeError('BookKit event names cannot be empty');
+          post({ type: 'custom', name: normalized, payload });
+        },
+        registerCommand(name, handler) {
+          const normalized = normalizeName(name);
+          if (!normalized) throw new TypeError('BookKit command names cannot be empty');
+          if (typeof handler !== 'function') throw new TypeError('BookKit command handlers must be functions');
+          if (commandHandlers.has(normalized)) throw new Error(`BookKit command already registered: ${normalized}`);
+          commandHandlers.set(normalized, handler);
+        },
+        on(name, handler) {
+          const normalized = normalizeName(name);
+          if (!normalized) throw new TypeError('BookKit hook names cannot be empty');
+          if (typeof handler !== 'function') throw new TypeError('BookKit hook handlers must be functions');
+          const handlers = lifecycleHandlers.get(normalized) || new Set();
+          handlers.add(handler);
+          lifecycleHandlers.set(normalized, handlers);
+          return () => handlers.delete(handler);
+        }
+      });
+      window.BookKitNativeDispatch = async (name, payload) => {
+        const normalized = normalizeName(name);
+        const handler = commandHandlers.get(normalized);
+        if (!handler) throw new Error(`Unknown BookKit command: ${normalized}`);
+        return await handler(payload);
+      };
+      window.BookKitNativeEmitHook = (name, payload) => {
+        const handlers = lifecycleHandlers.get(name);
+        if (!handlers) return;
+        for (const handler of handlers) {
+          try {
+            handler(payload);
+          } catch (error) {
+            post({
+              type: 'custom',
+              name: 'bookkit.pluginError',
+              payload: { hook: name, message: String(error && error.message ? error.message : error) }
+            });
+          }
         }
       };
 
@@ -264,15 +440,45 @@ public final class WebViewReflowBridge: NSObject, ReflowBridge, WKScriptMessageH
         }
       };
 
+      window.BookKitNativeApplyAccessibility = () => {
+        const root = document.documentElement;
+        if (!root) return;
+        const settings = window.__bookkitAccessibility || {};
+        root.dataset.bookkitVoiceOver = settings.voiceOver ? 'true' : 'false';
+        root.dataset.bookkitReducedMotion = settings.reducedMotion ? 'true' : 'false';
+        root.style.scrollBehavior = settings.reducedMotion ? 'auto' : 'smooth';
+
+        let liveRegion = document.getElementById('bookkit-position-announcer');
+        if (settings.announcesPositionChanges) {
+          if (!liveRegion) {
+            liveRegion = document.createElement('div');
+            liveRegion.id = 'bookkit-position-announcer';
+            liveRegion.setAttribute('role', 'status');
+            liveRegion.setAttribute('aria-live', 'polite');
+            liveRegion.setAttribute('aria-atomic', 'true');
+            Object.assign(liveRegion.style, {
+              position: 'fixed', width: '1px', height: '1px', overflow: 'hidden',
+              clipPath: 'inset(50%)', whiteSpace: 'nowrap'
+            });
+            document.body && document.body.appendChild(liveRegion);
+          }
+        } else if (liveRegion) {
+          liveRegion.remove();
+        }
+      };
+
       const computeProgression = () => {
+        const scrollingElement = document.scrollingElement || document.documentElement;
         if (isPaginated()) {
           const w = Math.max(document.documentElement.scrollWidth || 0, document.body ? document.body.scrollWidth || 0 : 0);
           const vw = Math.max(window.innerWidth || 1, 1);
-          return clamp((window.scrollX || 0) / Math.max(w - vw, 1));
+          const x = Math.max(window.scrollX || 0, scrollingElement ? scrollingElement.scrollLeft || 0 : 0);
+          return clamp(x / Math.max(w - vw, 1));
         }
         const h = Math.max(document.documentElement.scrollHeight || 0, document.body ? document.body.scrollHeight || 0 : 0);
         const vh = Math.max(window.innerHeight || 1, 1);
-        return clamp((window.scrollY || 0) / Math.max(h - vh, 1));
+        const y = Math.max(window.scrollY || 0, scrollingElement ? scrollingElement.scrollTop || 0 : 0);
+        return clamp(y / Math.max(h - vh, 1));
       };
 
       window.BookKitNativeEmitReady = () => {
@@ -285,26 +491,67 @@ public final class WebViewReflowBridge: NSObject, ReflowBridge, WKScriptMessageH
         window.BookKitNativeMeasurePages();
       };
 
-      window.BookKitNativeReportPosition = () => {
+      const visibleAnchor = () => {
+        if (!document.elementsFromPoint) return null;
+        const x = Math.max(1, Math.min((window.innerWidth || 2) / 2, (window.innerWidth || 2) - 1));
+        const y = Math.max(1, Math.min(24, (window.innerHeight || 2) - 1));
+        for (const element of document.elementsFromPoint(x, y)) {
+          const anchored = element && element.closest ? element.closest('[id]') : null;
+          if (anchored && anchored.id && anchored.id !== 'bookkit-position-announcer') return anchored.id;
+        }
+        return null;
+      };
+
+      let lastAnnouncedPercent = -100;
+      let lastAnnouncedAnchor = null;
+      let lastReportedProgression = -1;
+      let lastReportedAnchor = null;
+      window.BookKitNativeReportPosition = (force = false, requestedProgression = null) => {
+        const progression = requestedProgression === null
+          ? computeProgression()
+          : clamp(Number(requestedProgression));
+        const anchor = visibleAnchor();
+        if (!force
+          && Math.abs(progression - lastReportedProgression) < 0.0001
+          && anchor === lastReportedAnchor) {
+          return;
+        }
+        lastReportedProgression = progression;
+        lastReportedAnchor = anchor;
         post({
           type: 'positionChanged',
           spineIndex: 0,
-          progression: computeProgression()
+          progression,
+          anchor
         });
+        window.BookKitNativeEmitHook('positionChanged', { progression, anchor });
+
+        const settings = window.__bookkitAccessibility || {};
+        const percent = Math.round(progression * 100);
+        const shouldAnnounce = anchor !== lastAnnouncedAnchor || Math.abs(percent - lastAnnouncedPercent) >= 5;
+        if (settings.announcesPositionChanges && shouldAnnounce) {
+          const liveRegion = document.getElementById('bookkit-position-announcer');
+          if (liveRegion) liveRegion.textContent = `Reading position ${percent} percent`;
+          lastAnnouncedPercent = percent;
+          lastAnnouncedAnchor = anchor;
+        }
       };
 
       window.BookKitNativeGoToProgression = progression => {
         const clamped = clamp(Number(progression || 0));
+        const scrollingElement = document.scrollingElement || document.documentElement;
         if (isPaginated()) {
           const width = Math.max(document.documentElement.scrollWidth || 0, document.body ? document.body.scrollWidth || 0 : 0);
           const viewportWidth = Math.max(window.innerWidth || 1, 1);
           const maxScroll = Math.max(width - viewportWidth, 1);
           window.scrollTo(maxScroll * clamped, 0);
+          if (scrollingElement) scrollingElement.scrollLeft = maxScroll * clamped;
         } else {
           const height = Math.max(document.documentElement.scrollHeight || 0, document.body ? document.body.scrollHeight || 0 : 0);
           const viewportHeight = Math.max(window.innerHeight || 1, 1);
           const maxScroll = Math.max(height - viewportHeight, 1);
           window.scrollTo(0, maxScroll * clamped);
+          if (scrollingElement) scrollingElement.scrollTop = maxScroll * clamped;
         }
       };
 
@@ -372,9 +619,16 @@ public final class WebViewReflowBridge: NSObject, ReflowBridge, WKScriptMessageH
         }
       };
 
-      document.addEventListener('scroll', () => {
-        window.BookKitNativeReportPosition();
-      }, { passive: true });
+      let positionAnimationFrame = 0;
+      const reportScrolledPosition = () => {
+        if (positionAnimationFrame) return;
+        positionAnimationFrame = window.requestAnimationFrame(() => {
+          positionAnimationFrame = 0;
+          window.BookKitNativeReportPosition();
+        });
+      };
+      window.addEventListener('scroll', reportScrolledPosition, { passive: true });
+      document.addEventListener('scroll', reportScrolledPosition, { passive: true, capture: true });
 
       window.addEventListener('resize', () => {
         window.BookKitNativeApplyReadingMode();
@@ -393,6 +647,11 @@ public final class WebViewReflowBridge: NSObject, ReflowBridge, WKScriptMessageH
           end: range.endOffset || 0,
           text
         });
+        window.BookKitNativeEmitHook('selectionChanged', {
+          start: range.startOffset || 0,
+          end: range.endOffset || 0,
+          text
+        });
       });
 
       document.addEventListener('click', event => {
@@ -407,6 +666,7 @@ public final class WebViewReflowBridge: NSObject, ReflowBridge, WKScriptMessageH
 
         const target = event.target && event.target.closest ? event.target.closest('a') : null;
         if (!target) return;
+        event.preventDefault();
         const href = target.getAttribute('href') || '';
 
         let kind = 'unsupported';
@@ -416,10 +676,8 @@ public final class WebViewReflowBridge: NSObject, ReflowBridge, WKScriptMessageH
         else if (href.length > 0) kind = 'spine';
 
         post({ type: 'linkTapped', url: href, kind });
+        window.BookKitNativeEmitHook('linkTapped', { url: href, kind });
 
-        if (kind === 'external' || kind === 'unsupported') {
-          event.preventDefault();
-        }
       });
     })();
     """

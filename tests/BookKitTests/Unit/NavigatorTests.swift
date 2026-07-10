@@ -3,6 +3,17 @@ import XCTest
 
 @MainActor
 final class NavigatorTests: XCTestCase {
+    func testAccessibilitySettingsDecodeOlderPayloadWithNewDefaults() throws {
+        let data = Data(
+            #"{"isVoiceOverEnabled":true,"forceScrollWhenVoiceOverEnabled":true}"#.utf8
+        )
+        let settings = try JSONDecoder().decode(ReaderAccessibilitySettings.self, from: data)
+
+        XCTAssertTrue(settings.isVoiceOverEnabled)
+        XCTAssertFalse(settings.prefersReducedMotion)
+        XCTAssertFalse(settings.announcesPositionChanges)
+    }
+
     func testLocatorExposesSectionProgressAndAnchor() async throws {
         let bridge = MockReflowBridge()
         let renderer = try ContentRenderer(

@@ -11,6 +11,8 @@ final class MockReflowBridge: ReflowBridge {
         case setTheme(Theme)
         case setTypography(Typography)
         case setDecorations([Decoration])
+        case setAccessibility(ReaderAccessibilitySettings)
+        case setNetworkAccessAllowed(Bool)
         case measurePages
     }
 
@@ -63,6 +65,14 @@ final class MockReflowBridge: ReflowBridge {
 
     func setDecorations(_ decorations: [Decoration]) async throws {
         commands.append(.setDecorations(decorations))
+    }
+
+    func setAccessibility(_ settings: ReaderAccessibilitySettings) async throws {
+        commands.append(.setAccessibility(settings))
+    }
+
+    func setNetworkAccessAllowed(_ allowed: Bool) async throws {
+        commands.append(.setNetworkAccessAllowed(allowed))
     }
 
     func measurePages() async throws {

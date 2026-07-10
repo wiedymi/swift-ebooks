@@ -8,6 +8,7 @@ public enum ReflowBridgeEvent: Sendable, Equatable {
     case decorationTapped(id: String, group: DecorationGroup)
     case selectionChanged(range: SelectionRange, text: String)
     case contentHeightChanged(Double)
+    case custom(name: String, payload: BridgeValue)
 }
 
 @MainActor
@@ -21,7 +22,19 @@ public protocol ReflowBridge: AnyObject {
     func setTheme(_ theme: Theme) async throws
     func setTypography(_ typography: Typography) async throws
     func setDecorations(_ decorations: [Decoration]) async throws
+    func setAccessibility(_ settings: ReaderAccessibilitySettings) async throws
+    func setNetworkAccessAllowed(_ allowed: Bool) async throws
+    func callPlugin(_ name: String, payload: BridgeValue) async throws -> BridgeValue
     func measurePages() async throws
+}
+
+public extension ReflowBridge {
+    func setAccessibility(_: ReaderAccessibilitySettings) async throws {}
+    func setNetworkAccessAllowed(_: Bool) async throws {}
+
+    func callPlugin(_: String, payload _: BridgeValue) async throws -> BridgeValue {
+        throw BookError.renderingFailed("This reflow bridge does not support custom commands")
+    }
 }
 
 public enum BridgeMessageValidator {
@@ -92,6 +105,23 @@ public enum BridgeMessageValidator {
                 return nil
             }
             return .contentHeightChanged(max(value, 0))
+
+        case "custom":
+            guard let name = dict["name"] as? String,
+                  !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else {
+                return nil
+            }
+            let payload: BridgeValue
+            if let rawPayload = dict["payload"] {
+                guard let decoded = BridgeValue(foundationValue: rawPayload) else {
+                    return nil
+                }
+                payload = decoded
+            } else {
+                payload = .null
+            }
+            return .custom(name: name, payload: payload)
 
         default:
             return nil

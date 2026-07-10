@@ -17,7 +17,7 @@ public actor ResourceLoader {
         self.book = book
         self.options = options
         self.allowedRoot = allowedRoot
-        self.maxAssetBytes = max(maxAssetBytes, 1)
+        self.maxAssetBytes = min(max(maxAssetBytes, 1), options.maxResourceBytes)
     }
 
     public func data(forAssetID id: String) async throws -> Data? {
@@ -54,7 +54,12 @@ public actor ResourceLoader {
                 if !options.allowsNetwork {
                     throw BookError.io("Remote asset fetch blocked by OpenOptions")
                 }
-                let payload = try Data(contentsOf: url)
+                let (payload, response) = try await URLSession.shared.data(from: url)
+                if let response = response as? HTTPURLResponse,
+                   !(200...299).contains(response.statusCode)
+                {
+                    throw BookError.io("Remote asset returned HTTP \(response.statusCode)")
+                }
                 return try validatedAssetData(payload, mediaType: nil)
             case "file":
                 let fileURL = URL(fileURLWithPath: url.path)

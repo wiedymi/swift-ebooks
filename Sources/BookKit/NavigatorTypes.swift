@@ -26,16 +26,60 @@ public struct ReaderPreferences: Sendable, Equatable, Hashable, Codable {
 public struct ReaderAccessibilitySettings: Sendable, Equatable, Hashable, Codable {
     public var isVoiceOverEnabled: Bool
     public var forceScrollWhenVoiceOverEnabled: Bool
+    public var prefersReducedMotion: Bool
+    public var announcesPositionChanges: Bool
 
     public init(
         isVoiceOverEnabled: Bool = false,
-        forceScrollWhenVoiceOverEnabled: Bool = true
+        forceScrollWhenVoiceOverEnabled: Bool = true,
+        prefersReducedMotion: Bool = false,
+        announcesPositionChanges: Bool = false
     ) {
         self.isVoiceOverEnabled = isVoiceOverEnabled
         self.forceScrollWhenVoiceOverEnabled = forceScrollWhenVoiceOverEnabled
+        self.prefersReducedMotion = prefersReducedMotion
+        self.announcesPositionChanges = announcesPositionChanges
     }
 
     public static let `default` = ReaderAccessibilitySettings()
+
+    private enum CodingKeys: String, CodingKey {
+        case isVoiceOverEnabled
+        case forceScrollWhenVoiceOverEnabled
+        case prefersReducedMotion
+        case announcesPositionChanges
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        isVoiceOverEnabled = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .isVoiceOverEnabled
+        ) ?? false
+        forceScrollWhenVoiceOverEnabled = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .forceScrollWhenVoiceOverEnabled
+        ) ?? true
+        prefersReducedMotion = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .prefersReducedMotion
+        ) ?? false
+        announcesPositionChanges = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .announcesPositionChanges
+        ) ?? false
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(isVoiceOverEnabled, forKey: .isVoiceOverEnabled)
+        try container.encode(
+            forceScrollWhenVoiceOverEnabled,
+            forKey: .forceScrollWhenVoiceOverEnabled
+        )
+        try container.encode(prefersReducedMotion, forKey: .prefersReducedMotion)
+        try container.encode(announcesPositionChanges, forKey: .announcesPositionChanges)
+    }
 }
 
 public struct Locator: Sendable, Equatable, Hashable, Codable {
@@ -152,14 +196,32 @@ public struct DecorationTapEvent: Sendable, Equatable, Hashable, Codable {
     }
 }
 
+public struct ReaderSelection: Sendable, Equatable {
+    public var range: SelectionRange
+    public var text: String
+    public var locator: Locator
+
+    public init(range: SelectionRange, text: String, locator: Locator) {
+        self.range = range
+        self.text = text
+        self.locator = locator
+    }
+}
+
 public enum NavigatorEvent: Sendable, Equatable {
+    case ready
     case locatorChanged(Locator)
+    case paginationChanged(PageMap)
+    case selectionChanged(ReaderSelection)
+    case contentHeightChanged(Double)
     case historyChanged(canGoBack: Bool, canGoForward: Bool)
     case readingModeChanged(ReadingMode)
     case preferencesChanged(ReaderPreferences)
     case accessibilityChanged(ReaderAccessibilitySettings)
     case linkActivated(url: URL, kind: LinkKind, action: LinkAction)
     case decorationTapped(DecorationTapEvent)
+    case bridgeMessage(name: String, payload: BridgeValue)
+    case error(BookError)
 }
 
 @MainActor
@@ -168,6 +230,7 @@ public protocol Navigator: AnyObject {
 
     func currentLocator() async -> Locator
     func go(to locator: Locator) async throws
+    func go(to navigationItem: TOCNode) async throws
     func goBack() async throws -> Locator?
     func goForward() async throws -> Locator?
     func canGoBack() -> Bool
@@ -180,6 +243,7 @@ public protocol Navigator: AnyObject {
 
     func accessibility() -> ReaderAccessibilitySettings
     func setAccessibility(_ settings: ReaderAccessibilitySettings) async throws
+    func callBridgeCommand(_ name: String, payload: BridgeValue) async throws -> BridgeValue
 }
 
 public extension Book {
@@ -199,5 +263,111 @@ public extension Book {
             cfi: position.cfi,
             textContext: position.textContext
         )
+    }
+
+    func locator(
+        forNavigationHref rawHref: String,
+        relativeTo currentChapterHref: String? = nil
+    ) -> Locator? {
+        let trimmed = rawHref.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return nil
+        }
+
+        let path: String
+        let fragment: String?
+        if let url = URL(string: trimmed), let scheme = url.scheme?.lowercased() {
+            guard scheme == "bookkit" else {
+                return nil
+            }
+            path = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            fragment = url.fragment?.removingPercentEncoding ?? url.fragment
+        } else {
+            let parts = trimmed.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
+            path = parts.first.map(String.init) ?? ""
+            let rawFragment = parts.count > 1 ? String(parts[1]) : nil
+            fragment = rawFragment?.removingPercentEncoding ?? rawFragment
+        }
+
+        let currentPath = currentChapterHref.map(normalizeNavigationPath) ?? ""
+        var candidates: [String] = []
+        if path.isEmpty || path == "current" {
+            if !currentPath.isEmpty {
+                candidates.append(currentPath)
+            }
+        } else {
+            let normalizedPath = normalizeNavigationPath(path)
+            candidates.append(normalizedPath)
+
+            let currentDirectory = normalizeNavigationPath(
+                (currentPath as NSString).deletingLastPathComponent
+            )
+            if !currentDirectory.isEmpty {
+                candidates.append(
+                    normalizeNavigationPath(
+                        (currentDirectory as NSString).appendingPathComponent(path)
+                    )
+                )
+            }
+        }
+
+        for candidate in candidates where !candidate.isEmpty {
+            if let index = readingOrder.firstIndex(where: {
+                normalizeNavigationPath($0.href) == candidate
+            }) {
+                return locator(
+                    for: Position(
+                        spineIndex: index,
+                        progression: 0,
+                        fragment: fragment
+                    )
+                )
+            }
+
+            if let index = readingOrder.firstIndex(where: {
+                let href = normalizeNavigationPath($0.href)
+                return href.hasSuffix("/" + candidate) || candidate.hasSuffix("/" + href)
+            }) {
+                return locator(
+                    for: Position(
+                        spineIndex: index,
+                        progression: 0,
+                        fragment: fragment
+                    )
+                )
+            }
+        }
+
+        return nil
+    }
+
+    private func normalizeNavigationPath(_ raw: String) -> String {
+        let noFragment = raw.split(
+            separator: "#",
+            maxSplits: 1,
+            omittingEmptySubsequences: false
+        ).first.map(String.init) ?? raw
+        let noQuery = noFragment.split(
+            separator: "?",
+            maxSplits: 1,
+            omittingEmptySubsequences: false
+        ).first.map(String.init) ?? noFragment
+        let decoded = (noQuery.removingPercentEncoding ?? noQuery)
+            .replacingOccurrences(of: "\\", with: "/")
+
+        var components: [String] = []
+        for component in decoded.split(separator: "/", omittingEmptySubsequences: false) {
+            if component.isEmpty || component == "." {
+                continue
+            }
+            if component == ".." {
+                if !components.isEmpty {
+                    components.removeLast()
+                }
+                continue
+            }
+            components.append(String(component))
+        }
+        return components.joined(separator: "/")
     }
 }

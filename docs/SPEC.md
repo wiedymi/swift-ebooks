@@ -1,5 +1,9 @@
 # Swift BookKit Spec (v1.0)
 
+> Implementation note: this is the architecture target. See
+> [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md) for the tested support
+> matrix and explicit remaining limits.
+
 Date: 2026-02-22
 
 ## 1. Objective

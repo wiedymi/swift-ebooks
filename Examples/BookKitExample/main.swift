@@ -1,8 +1,13 @@
 #if canImport(SwiftUI) && canImport(UniformTypeIdentifiers) && canImport(WebKit)
 import BookKit
+import Combine
 import SwiftUI
 import UniformTypeIdentifiers
 import WebKit
+
+#if canImport(PDFKit) && !os(tvOS)
+import PDFKit
+#endif
 
 #if os(macOS)
 import AppKit
@@ -58,6 +63,20 @@ struct ExampleRootView: View {
             allowedContentTypes: ExampleViewModel.supportedTypes
         ) { result in
             model.handleImportResult(result)
+        }
+        .task {
+            model.syncSystemAccessibility()
+            model.openDemoFromArgumentsIfPresent()
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(for: ExampleSystemAccessibility.primaryNotification)
+        ) { _ in
+            model.syncSystemAccessibility()
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(for: ExampleSystemAccessibility.secondaryNotification)
+        ) { _ in
+            model.syncSystemAccessibility()
         }
     }
 
@@ -171,6 +190,14 @@ struct ExampleRootView: View {
             }
             .exampleControlButtonStyle()
             .disabled(!model.canNavigate)
+
+            Button {
+                model.pingExamplePlugin()
+            } label: {
+                Label("Plug-in", systemImage: "puzzlepiece.extension")
+            }
+            .exampleControlButtonStyle()
+            .disabled(!model.canUsePlugin)
         }
             .padding(.horizontal, 2)
         }
@@ -246,6 +273,8 @@ struct ExampleRootView: View {
                     Text("Position: \(model.position.spineIndex + 1) • \(Int(model.position.progression * 100))%")
                     Text("Locator: \(model.locator.sectionIndex + 1) • \(Int(model.locator.sectionProgression * 100))%")
                     Text("Book Progress: \(Int(model.locator.totalProgression * 100))%")
+                    Text("Measured Pages: \(model.pageCount)")
+                    Text("Content Height: \(Int(model.contentHeight)) pt")
                     Text("Mode: \(model.readingMode.title) (effective: \(model.effectiveReadingMode.title))")
                 }
                 .font(.caption)
@@ -258,16 +287,39 @@ struct ExampleRootView: View {
                 }
 
                 if !book.readingOrder.isEmpty {
-                    Picker("Chapter", selection: $model.selectedChapterIndex) {
+                    Picker(
+                        "Chapter",
+                        selection: Binding(
+                            get: { model.selectedChapterIndex },
+                            set: { model.selectChapter($0) }
+                        )
+                    ) {
                         ForEach(Array(book.readingOrder.indices), id: \.self) { index in
                             let title = book.readingOrder[index].title?.ifEmpty("Untitled \(index + 1)") ?? "Untitled \(index + 1)"
                             Text("\(index + 1). \(title)").tag(index)
                         }
                     }
                     .pickerStyle(.menu)
-                    .onChange(of: model.selectedChapterIndex) { newValue in
-                        model.selectChapter(newValue)
+                }
+
+                navigationPanel(title: "Table of Contents", nodes: book.tableOfContents)
+                navigationPanel(title: "Landmarks", nodes: book.landmarks)
+                navigationPanel(title: "Page List", nodes: book.pageList)
+
+                DisclosureGroup("Live Reader Events") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        if let selection = model.latestSelection {
+                            Text("Selection: \(selection.text)")
+                                .lineLimit(3)
+                        }
+                        Text("Plug-in: \(model.pluginStatus)")
+                        ForEach(Array(model.eventLog.suffix(8).enumerated()), id: \.offset) { _, event in
+                            Text(event)
+                        }
                     }
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
                 VStack(alignment: .leading, spacing: 8) {
@@ -314,23 +366,41 @@ struct ExampleRootView: View {
     }
 
     @ViewBuilder
+    private func navigationPanel(title: String, nodes: [TOCNode]) -> some View {
+        if !nodes.isEmpty {
+            DisclosureGroup("\(title) (\(nodes.flatMap(\.flattened).count))") {
+                VStack(alignment: .leading, spacing: 5) {
+                    ForEach(nodes) { node in
+                        TOCBranch(node: node, depth: 0) { selected in
+                            model.openNavigationItem(selected)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
     private func readerPanel(book: Book) -> some View {
         if book.format == .pdf {
-            ScrollView {
+            if let data = book.assets.first(where: { $0.id == "pdf-document" })?.data {
+                #if canImport(PDFKit) && !os(tvOS)
+                PDFBookView(data: data, pageIndex: model.selectedChapterIndex)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                #else
                 Text(model.currentPDFPageText)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(20)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                #endif
+            } else {
+                Text(model.currentPDFPageText)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let bridge = model.bridge {
             GeometryReader { geometry in
                 BookView(bridge: bridge)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .onAppear {
+                    .task(id: geometry.size) {
                         model.updateViewport(size: geometry.size)
-                    }
-                    .onChange(of: geometry.size) { newSize in
-                        model.updateViewport(size: newSize)
                     }
                     .simultaneousGesture(
                         DragGesture(minimumDistance: 24)
@@ -366,6 +436,63 @@ struct ExampleRootView: View {
     }
 }
 
+private struct TOCBranch: View {
+    let node: TOCNode
+    let depth: Int
+    let action: (TOCNode) -> Void
+
+    @State private var isExpanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 5) {
+                if node.children.isEmpty {
+                    Color.clear.frame(width: 14, height: 1)
+                } else {
+                    Button {
+                        isExpanded.toggle()
+                    } label: {
+                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                            .font(.caption2)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(isExpanded ? "Collapse" : "Expand")
+                }
+
+                Button(node.title.ifEmpty("Untitled")) {
+                    action(node)
+                }
+                .buttonStyle(.plain)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.leading, CGFloat(depth) * 12)
+
+            if isExpanded {
+                ForEach(node.children) { child in
+                    TOCBranch(node: child, depth: depth + 1, action: action)
+                }
+            }
+        }
+        .font(.caption)
+    }
+}
+
+@MainActor
+private enum ExampleSystemAccessibility {
+    #if os(macOS)
+    static var isVoiceOverEnabled: Bool { NSWorkspace.shared.isVoiceOverEnabled }
+    static var prefersReducedMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+    static let primaryNotification = NSWorkspace.accessibilityDisplayOptionsDidChangeNotification
+    static let secondaryNotification = NSWorkspace.accessibilityDisplayOptionsDidChangeNotification
+    #else
+    static var isVoiceOverEnabled: Bool { UIAccessibility.isVoiceOverRunning }
+    static var prefersReducedMotion: Bool { UIAccessibility.isReduceMotionEnabled }
+    static let primaryNotification = UIAccessibility.voiceOverStatusDidChangeNotification
+    static let secondaryNotification = UIAccessibility.reduceMotionStatusDidChangeNotification
+    #endif
+}
+
 @MainActor
 final class ExampleViewModel: ObservableObject {
     @Published var isImporterPresented = false
@@ -385,14 +512,24 @@ final class ExampleViewModel: ObservableObject {
     @Published var readingMode: ReadingMode = .scroll
     @Published var effectiveReadingMode: ReadingMode = .scroll
     @Published var isVoiceOverEnabled = false
+    @Published var isReducedMotionEnabled = false
     @Published var canGoBack = false
     @Published var canGoForward = false
+    @Published var pageCount = 1
+    @Published var contentHeight: Double = 0
+    @Published var latestSelection: ReaderSelection?
+    @Published var pluginStatus = "Idle"
+    @Published var eventLog: [String] = []
 
     @Published private var viewport = Viewport(width: 740, height: 900)
 
     var canNavigate: Bool { renderer != nil }
+    var canUsePlugin: Bool { bridge != nil && renderer != nil }
 
-    private var positionPollTask: Task<Void, Never>?
+    private var eventTask: Task<Void, Never>?
+    private var viewportTask: Task<Void, Never>?
+    private var didAttemptDemoOpen = false
+    private var isAutomatedDemoLaunch = false
 
     var currentPDFPageText: String {
         guard let book, book.format == .pdf, !book.readingOrder.isEmpty else {
@@ -434,11 +571,16 @@ final class ExampleViewModel: ObservableObject {
         errorMessage = nil
         defer { isBusy = false }
 
-        positionPollTask?.cancel()
+        eventTask?.cancel()
+        viewportTask?.cancel()
 
         do {
             let loadedBook = try await Book.open(from: url, options: openOptions)
-            let bridge = loadedBook.format == .pdf ? nil : WebViewReflowBridge()
+            let bridge = loadedBook.format == .pdf ? nil : WebViewReflowBridge(
+                configuration: WebViewReflowConfiguration(
+                    plugins: [Self.examplePlugin]
+                )
+            )
             let renderer = try ContentRenderer(
                 book: loadedBook,
                 options: openOptions,
@@ -449,7 +591,8 @@ final class ExampleViewModel: ObservableObject {
             self.book = loadedBook
             self.bridge = bridge
             self.renderer = renderer
-            self.posterImage = try await loadPosterImage(for: loadedBook)
+            startEventSubscription(renderer: renderer)
+            self.posterImage = await loadPosterImage(for: loadedBook)
 
             try await renderer.restoreState()
             let restoredPreferences = await renderer.preferences()
@@ -460,7 +603,9 @@ final class ExampleViewModel: ObservableObject {
             try await renderer.setAccessibility(
                 ReaderAccessibilitySettings(
                     isVoiceOverEnabled: isVoiceOverEnabled,
-                    forceScrollWhenVoiceOverEnabled: true
+                    forceScrollWhenVoiceOverEnabled: true,
+                    prefersReducedMotion: isReducedMotionEnabled,
+                    announcesPositionChanges: isVoiceOverEnabled
                 )
             )
 
@@ -477,9 +622,20 @@ final class ExampleViewModel: ObservableObject {
             }
 
             await refreshState()
-            startPositionPolling()
+            appendEvent("Opened \(loadedBook.format.rawValue.uppercased()) • \(loadedBook.readingOrder.count) sections")
+            if isAutomatedDemoLaunch {
+                print(
+                    "BOOKKIT_EXAMPLE_READY format=\(loadedBook.format.rawValue) "
+                        + "chapters=\(loadedBook.readingOrder.count) "
+                        + "toc=\(loadedBook.tableOfContents.flatMap(\.flattened).count)"
+                )
+            }
         } catch {
             errorMessage = "Open failed: \(error.localizedDescription)"
+            eventTask?.cancel()
+            if isAutomatedDemoLaunch {
+                print("BOOKKIT_EXAMPLE_FAILED \(error.localizedDescription)")
+            }
         }
     }
 
@@ -498,20 +654,24 @@ final class ExampleViewModel: ObservableObject {
             return
         }
 
-        Task {
+        viewportTask?.cancel()
+        viewportTask = Task { @MainActor [weak self, weak renderer] in
+            try? await Task.sleep(nanoseconds: 80_000_000)
+            guard !Task.isCancelled, let self, let renderer else { return }
             do {
+                let restoredPosition = await renderer.currentPosition()
                 let preferences = await renderer.preferences()
                 try await renderer.renderChapter(
-                    at: selectedChapterIndex,
-                    viewport: viewport,
+                    at: restoredPosition.spineIndex,
+                    viewport: self.viewport,
                     theme: preferences.theme,
                     typography: preferences.typography
                 )
-                let restoredPosition = await renderer.currentPosition()
                 try await renderer.go(to: restoredPosition)
-                await refreshState()
+                await self.refreshState()
             } catch {
-                errorMessage = "Rerender failed: \(error.localizedDescription)"
+                guard !Task.isCancelled else { return }
+                self.errorMessage = "Rerender failed: \(error.localizedDescription)"
             }
         }
     }
@@ -607,18 +767,86 @@ final class ExampleViewModel: ObservableObject {
 
     func setVoiceOverEnabledFromUI(_ enabled: Bool) {
         isVoiceOverEnabled = enabled
+        applyAccessibilitySettings()
+    }
+
+    func syncSystemAccessibility() {
+        let voiceOver = ExampleSystemAccessibility.isVoiceOverEnabled
+        let reducedMotion = ExampleSystemAccessibility.prefersReducedMotion
+        guard voiceOver != isVoiceOverEnabled || reducedMotion != isReducedMotionEnabled else {
+            return
+        }
+        isVoiceOverEnabled = voiceOver
+        isReducedMotionEnabled = reducedMotion
+        applyAccessibilitySettings()
+    }
+
+    func openDemoFromArgumentsIfPresent() {
+        guard !didAttemptDemoOpen else { return }
+        didAttemptDemoOpen = true
+
+        let arguments = ProcessInfo.processInfo.arguments
+        let argumentPath: String?
+        if let flag = arguments.firstIndex(of: "--demo"), arguments.indices.contains(flag + 1) {
+            argumentPath = arguments[flag + 1]
+        } else {
+            argumentPath = ProcessInfo.processInfo.environment["BOOKKIT_DEMO_PATH"]
+        }
+        guard let path = argumentPath?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !path.isEmpty
+        else {
+            return
+        }
+        isAutomatedDemoLaunch = true
+        let expanded = (path as NSString).expandingTildeInPath
+        Task { @MainActor [weak self] in
+            await self?.openBook(at: URL(fileURLWithPath: expanded))
+        }
+    }
+
+    func openNavigationItem(_ item: TOCNode) {
         guard let renderer else { return }
         Task {
             do {
-                try await renderer.setAccessibility(
-                    ReaderAccessibilitySettings(
-                        isVoiceOverEnabled: enabled,
-                        forceScrollWhenVoiceOverEnabled: true
-                    )
-                )
+                try await renderer.go(to: item)
                 await refreshState()
             } catch {
-                errorMessage = "Accessibility update failed: \(error.localizedDescription)"
+                errorMessage = "Navigation failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func pingExamplePlugin() {
+        guard let renderer else { return }
+        Task {
+            do {
+                let result = try await renderer.callBridgeCommand(
+                    "example.ping",
+                    payload: .object(["message": .string("Hello from Swift")])
+                )
+                pluginStatus = "Reply: \(Self.describe(result))"
+                appendEvent("Custom command completed")
+            } catch {
+                pluginStatus = "Error: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func applyAccessibilitySettings() {
+        guard let renderer else { return }
+        let settings = ReaderAccessibilitySettings(
+            isVoiceOverEnabled: isVoiceOverEnabled,
+            forceScrollWhenVoiceOverEnabled: true,
+            prefersReducedMotion: isReducedMotionEnabled,
+            announcesPositionChanges: isVoiceOverEnabled
+        )
+        Task { @MainActor [weak self, weak renderer] in
+            guard let self, let renderer else { return }
+            do {
+                try await renderer.setAccessibility(settings)
+                await self.refreshState()
+            } catch {
+                self.errorMessage = "Accessibility update failed: \(error.localizedDescription)"
             }
         }
     }
@@ -707,6 +935,7 @@ final class ExampleViewModel: ObservableObject {
             bookmarks = []
             canGoBack = false
             canGoForward = false
+            pageCount = 1
             return
         }
 
@@ -717,6 +946,7 @@ final class ExampleViewModel: ObservableObject {
         canGoForward = renderer.canGoForward()
         readingMode = (await renderer.preferences()).readingMode
         effectiveReadingMode = await renderer.readingMode()
+        pageCount = renderer.pageCount()
 
         if let book {
             selectedChapterIndex = clampChapterIndex(position.spineIndex, book: book)
@@ -730,7 +960,7 @@ final class ExampleViewModel: ObservableObject {
         return min(max(index, 0), book.readingOrder.count - 1)
     }
 
-    private func loadPosterImage(for book: Book) async throws -> PlatformImage? {
+    private func loadPosterImage(for book: Book) async -> PlatformImage? {
         guard !book.assets.isEmpty else {
             return nil
         }
@@ -743,11 +973,15 @@ final class ExampleViewModel: ObservableObject {
             }
 
         for asset in imageAssets {
-            guard let data = try await loader.data(forAssetID: asset.id) else {
-                continue
-            }
-            if let image = PlatformImage(data: data) {
-                return image
+            do {
+                guard let data = try await loader.data(forAssetID: asset.id) else {
+                    continue
+                }
+                if let image = PlatformImage(data: data) {
+                    return image
+                }
+            } catch {
+                appendEvent("Skipped invalid poster candidate \(asset.id)")
             }
         }
         return nil
@@ -768,34 +1002,94 @@ final class ExampleViewModel: ObservableObject {
         return base.appendingPathComponent("BookKitExample/ReaderState", isDirectory: true)
     }
 
-    private func startPositionPolling() {
-        positionPollTask?.cancel()
-        positionPollTask = Task { @MainActor [weak self] in
-            while !Task.isCancelled {
-                guard let self, let renderer = self.renderer else {
-                    return
-                }
-
-                let next = await renderer.currentPosition()
-                if next != self.position {
-                    self.position = next
-                    if let book = self.book {
-                        self.selectedChapterIndex = self.clampChapterIndex(next.spineIndex, book: book)
-                    }
-                }
-                self.locator = await renderer.currentLocator()
-                self.canGoBack = renderer.canGoBack()
-                self.canGoForward = renderer.canGoForward()
-                self.readingMode = (await renderer.preferences()).readingMode
-                self.effectiveReadingMode = await renderer.readingMode()
-
-                try? await Task.sleep(nanoseconds: 250_000_000)
+    private func startEventSubscription(renderer: ContentRenderer) {
+        eventTask?.cancel()
+        let events = renderer.events
+        eventTask = Task { @MainActor [weak self] in
+            for await event in events {
+                self?.handle(event)
             }
         }
     }
 
+    private func handle(_ event: NavigatorEvent) {
+        switch event {
+        case .ready:
+            appendEvent("Renderer ready")
+        case let .locatorChanged(value):
+            locator = value
+            position = value.position
+            if let book {
+                selectedChapterIndex = clampChapterIndex(value.sectionIndex, book: book)
+            }
+        case let .paginationChanged(value):
+            pageCount = value.pageCount
+        case let .selectionChanged(value):
+            latestSelection = value
+            appendEvent("Selected \(value.text.prefix(36))")
+        case let .contentHeightChanged(value):
+            contentHeight = value
+        case let .historyChanged(back, forward):
+            canGoBack = back
+            canGoForward = forward
+        case let .readingModeChanged(value):
+            effectiveReadingMode = value
+        case let .preferencesChanged(value):
+            readingMode = value.readingMode
+        case let .accessibilityChanged(value):
+            isVoiceOverEnabled = value.isVoiceOverEnabled
+            isReducedMotionEnabled = value.prefersReducedMotion
+            appendEvent("Accessibility settings applied")
+        case let .linkActivated(url, kind, action):
+            appendEvent("Link \(kind.rawValue): \(action) • \(url.absoluteString)")
+        case let .decorationTapped(value):
+            appendEvent("Decoration tapped: \(value.group.rawValue)/\(value.id)")
+        case let .bridgeMessage(name, payload):
+            pluginStatus = "\(name): \(Self.describe(payload))"
+            appendEvent("Plug-in event: \(name)")
+        case let .error(error):
+            errorMessage = error.localizedDescription
+            appendEvent("Renderer error")
+        }
+    }
+
+    private func appendEvent(_ value: String) {
+        eventLog.append(value)
+        if eventLog.count > 50 {
+            eventLog.removeFirst(eventLog.count - 50)
+        }
+    }
+
+    private static func describe(_ value: BridgeValue) -> String {
+        switch value {
+        case .null: return "null"
+        case let .bool(value): return String(value)
+        case let .number(value): return String(value)
+        case let .string(value): return value
+        case let .array(values): return "[\(values.map(describe).joined(separator: ", "))]"
+        case let .object(values):
+            return "{" + values.keys.sorted().map { key in
+                "\(key): \(describe(values[key] ?? .null))"
+            }.joined(separator: ", ") + "}"
+        }
+    }
+
+    private static let examplePlugin = ReflowScriptPlugin(
+        identifier: "bookkit.example.integration",
+        source: """
+        window.BookKit.registerCommand('example.ping', payload => ({
+          reply: 'pong',
+          received: payload
+        }));
+        window.BookKit.on('contentDidChange', context => {
+          window.BookKit.post('example.contentReady', context);
+        });
+        """
+    )
+
     deinit {
-        positionPollTask?.cancel()
+        eventTask?.cancel()
+        viewportTask?.cancel()
     }
 }
 
@@ -808,7 +1102,13 @@ private extension String {
 private extension View {
     @ViewBuilder
     func exampleGlassSurface(cornerRadius: CGFloat, tintOpacity: Double) -> some View {
-        if #available(iOS 26, macOS 26, tvOS 26, visionOS 2, *) {
+        #if os(visionOS)
+        background(
+            .ultraThinMaterial,
+            in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        )
+        #else
+        if #available(iOS 26, macOS 26, tvOS 26, *) {
             glassEffect(
                 .regular
                     .tint(.white.opacity(tintOpacity))
@@ -821,15 +1121,20 @@ private extension View {
                 in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
             )
         }
+        #endif
     }
 
     @ViewBuilder
     func exampleControlButtonStyle() -> some View {
-        if #available(iOS 26, macOS 26, tvOS 26, visionOS 2, *) {
+        #if os(visionOS)
+        buttonStyle(.borderedProminent)
+        #else
+        if #available(iOS 26, macOS 26, tvOS 26, *) {
             buttonStyle(.glass)
         } else {
             buttonStyle(.borderedProminent)
         }
+        #endif
     }
 }
 

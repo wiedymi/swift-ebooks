@@ -8,15 +8,19 @@ public enum ReflowLayoutEvent: Sendable, Equatable {
     case decorationTapped(id: String, group: DecorationGroup)
     case selectionChanged(range: SelectionRange, text: String)
     case contentHeightChanged(Double)
+    case custom(name: String, payload: BridgeValue)
 }
 
 @MainActor
 public final class ReflowLayout {
     private let bridge: any ReflowBridge
+    private let allowsNetwork: Bool
     private var eventTask: Task<Void, Never>?
 
-    public let events: AsyncStream<ReflowLayoutEvent>
-    private let continuation: AsyncStream<ReflowLayoutEvent>.Continuation
+    public var events: AsyncStream<ReflowLayoutEvent> {
+        eventHub.stream()
+    }
+    private let eventHub = EventHub<ReflowLayoutEvent>()
 
     private var lastPageMap = PageMap()
     private var lastPosition: Position?
@@ -27,20 +31,14 @@ public final class ReflowLayout {
     private var readingMode: ReadingMode = .scroll
     private var currentSpineIndex: Int = 0
 
-    public init(bridge: any ReflowBridge) {
-        var streamContinuation: AsyncStream<ReflowLayoutEvent>.Continuation!
-        events = AsyncStream<ReflowLayoutEvent> { continuation in
-            streamContinuation = continuation
-        }
-        continuation = streamContinuation
-
+    public init(bridge: any ReflowBridge, options: OpenOptions = OpenOptions()) {
         self.bridge = bridge
+        allowsNetwork = options.allowsNetwork
         startEventLoop()
     }
 
     deinit {
         eventTask?.cancel()
-        continuation.finish()
     }
 
     public func render(
@@ -52,9 +50,14 @@ public final class ReflowLayout {
         typography: Typography = .default
     ) async throws {
         currentSpineIndex = max(spineIndex, 0)
-        let sanitized = SanitizeContent.run(chapter.content)
-        let css = ResolveStyles.run(baseCSS: baseCSS, theme: theme, typography: typography)
+        lastPosition = Position(spineIndex: currentSpineIndex, progression: 0)
+        let sanitized = SanitizeContent.run(chapter.content, allowsNetwork: allowsNetwork)
+        let css = SanitizeContent.css(
+            ResolveStyles.run(baseCSS: baseCSS, theme: theme, typography: typography),
+            allowsNetwork: allowsNetwork
+        )
 
+        try await bridge.setNetworkAccessAllowed(allowsNetwork)
         try await bridge.setContent(html: sanitized, css: css, viewport: viewport)
         try await bridge.setReadingMode(readingMode)
         try await bridge.setTheme(theme)
@@ -64,10 +67,17 @@ public final class ReflowLayout {
 
     public func goToAnchor(_ id: String) async throws {
         try await bridge.goToAnchor(id)
+        var position = lastPosition ?? Position(spineIndex: currentSpineIndex, progression: 0)
+        position.fragment = id
+        lastPosition = position
     }
 
     public func goToProgression(_ value: Double) async throws {
-        try await bridge.goToProgression(value)
+        let progression = min(max(value, 0), 1)
+        try await bridge.goToProgression(progression)
+        var position = lastPosition ?? Position(spineIndex: currentSpineIndex, progression: 0)
+        position.progression = progression
+        lastPosition = position
     }
 
     public func setReadingMode(_ mode: ReadingMode) async throws {
@@ -85,6 +95,14 @@ public final class ReflowLayout {
 
     public func setDecorations(_ decorations: [Decoration]) async throws {
         try await bridge.setDecorations(decorations)
+    }
+
+    public func setAccessibility(_ settings: ReaderAccessibilitySettings) async throws {
+        try await bridge.setAccessibility(settings)
+    }
+
+    public func callBridgeCommand(_ name: String, payload: BridgeValue) async throws -> BridgeValue {
+        try await bridge.callPlugin(name, payload: payload)
     }
 
     public func measurePages() async throws {
@@ -128,33 +146,43 @@ public final class ReflowLayout {
     private func apply(_ event: ReflowBridgeEvent) {
         switch event {
         case .ready:
-            continuation.yield(.ready)
+            eventHub.yield(.ready)
 
         case let .paginationChanged(pageCount, chapterProgressMap):
-            lastPageMap = PageMap(pageCount: pageCount, chapterProgressMap: chapterProgressMap)
-            continuation.yield(.paginationChanged(lastPageMap))
+            let progress = chapterProgressMap[currentSpineIndex]
+                ?? chapterProgressMap[0]
+                ?? chapterProgressMap.values.first
+                ?? []
+            lastPageMap = PageMap(
+                pageCount: pageCount,
+                chapterProgressMap: [currentSpineIndex: progress]
+            )
+            eventHub.yield(.paginationChanged(lastPageMap))
 
         case let .positionChanged(_, progression, cfi, anchor):
             lastPosition = Position(spineIndex: currentSpineIndex, progression: progression, cfi: cfi, fragment: anchor)
             if let lastPosition {
-                continuation.yield(.positionChanged(lastPosition))
+                eventHub.yield(.positionChanged(lastPosition))
             }
 
         case let .linkTapped(url, kind):
             lastLinkTap = (url, kind)
-            continuation.yield(.linkTapped(url: url, kind: kind))
+            eventHub.yield(.linkTapped(url: url, kind: kind))
 
         case let .decorationTapped(id, group):
             lastDecorationTap = (id, group)
-            continuation.yield(.decorationTapped(id: id, group: group))
+            eventHub.yield(.decorationTapped(id: id, group: group))
 
         case let .selectionChanged(range, text):
             lastSelection = (range, text)
-            continuation.yield(.selectionChanged(range: range, text: text))
+            eventHub.yield(.selectionChanged(range: range, text: text))
 
         case let .contentHeightChanged(value):
             lastContentHeight = value
-            continuation.yield(.contentHeightChanged(value))
+            eventHub.yield(.contentHeightChanged(value))
+
+        case let .custom(name, payload):
+            eventHub.yield(.custom(name: name, payload: payload))
         }
     }
 }

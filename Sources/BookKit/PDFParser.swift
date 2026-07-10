@@ -39,17 +39,30 @@ public struct PDFParser: BookParser {
         let title = (attrs[PDFDocumentAttribute.titleAttribute] as? String)?.normalizedWhitespace()
             ?? source.fileName
             ?? "Untitled"
+        let author = (attrs[PDFDocumentAttribute.authorAttribute] as? String)?
+            .normalizedWhitespace().nonEmpty
+        let pageList = chapters.map { TOCNode(title: $0.title ?? $0.id, href: $0.href) }
+        let outline = document.outlineRoot.map {
+            outlineNodes(parent: $0, document: document, path: [])
+        } ?? []
 
         return Book(
-            id: UUID().uuidString,
+            id: DeterministicIdentifier.make(namespace: "pdf", data: data),
             format: .pdf,
             version: "1.x",
-            metadata: Metadata(title: title, authors: []),
+            metadata: Metadata(title: title, authors: author.map { [$0] } ?? []),
             readingOrder: chapters,
-            assets: [],
-            tableOfContents: chapters.map { TOCNode(title: $0.title ?? $0.id, href: $0.href) },
+            assets: [
+                Asset(
+                    id: "pdf-document",
+                    href: source.fileName ?? "document.pdf",
+                    mediaType: "application/pdf",
+                    data: data
+                ),
+            ],
+            tableOfContents: outline.isEmpty ? pageList : outline,
             landmarks: [],
-            pageList: [],
+            pageList: pageList,
             rawExtensions: [:],
             diagnostics: []
         )
@@ -62,7 +75,7 @@ public struct PDFParser: BookParser {
         let text = data.bestEffortString().normalizedWhitespace()
         let chapter = Chapter(id: "page-1", href: "pdf://page/1", title: "Page 1", content: text.isEmpty ? "Page 1" : text)
         return Book(
-            id: UUID().uuidString,
+            id: DeterministicIdentifier.make(namespace: "pdf", data: data),
             format: .pdf,
             version: "1.x",
             metadata: Metadata(title: source.fileName ?? "Untitled", authors: []),
@@ -76,4 +89,34 @@ public struct PDFParser: BookParser {
         )
         #endif
     }
+
+    #if canImport(PDFKit)
+    private func outlineNodes(
+        parent: PDFOutline,
+        document: PDFDocument,
+        path: [Int]
+    ) -> [TOCNode] {
+        (0..<parent.numberOfChildren).compactMap { index in
+            guard let item = parent.child(at: index) else { return nil }
+            let itemPath = path + [index]
+            let children = outlineNodes(parent: item, document: document, path: itemPath)
+            let destination = item.destination
+                ?? (item.action as? PDFActionGoTo)?.destination
+            let pageIndex = destination?.page.map(document.index(for:))
+            let href = pageIndex.map { "pdf://page/\($0 + 1)" }
+                ?? children.first?.href
+                ?? "pdf://page/1"
+            return TOCNode(
+                id: "pdf-outline-" + itemPath.map(String.init).joined(separator: "."),
+                title: item.label?.normalizedWhitespace().nonEmpty ?? "Untitled",
+                href: href,
+                children: children
+            )
+        }
+    }
+    #endif
+}
+
+private extension String {
+    var nonEmpty: String? { isEmpty ? nil : self }
 }

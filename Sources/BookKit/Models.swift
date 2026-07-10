@@ -53,13 +53,31 @@ public struct Asset: Sendable, Equatable {
     }
 }
 
-public struct TOCNode: Sendable, Equatable {
+public struct TOCNode: Sendable, Equatable, Hashable, Codable, Identifiable {
+    public var id: String
     public var title: String
     public var href: String
+    public var roles: [String]
+    public var children: [TOCNode]
 
-    public init(title: String, href: String) {
+    public init(
+        id: String? = nil,
+        title: String,
+        href: String,
+        roles: [String] = [],
+        children: [TOCNode] = []
+    ) {
+        self.id = id ?? "\(href)|\(title)"
         self.title = title
         self.href = href
+        self.roles = roles
+        self.children = children
+    }
+}
+
+public extension TOCNode {
+    var flattened: [TOCNode] {
+        [self] + children.flatMap(\.flattened)
     }
 }
 
@@ -203,7 +221,10 @@ public extension Book {
         }
 
         do {
-            return try await parser.parse(source: .data(data, fileName: source.fileName), options: options)
+            return try await parser.parse(
+                source: .data(data, fileName: source.fileName),
+                options: options
+            )
         } catch {
             throw BookError.from(error)
         }

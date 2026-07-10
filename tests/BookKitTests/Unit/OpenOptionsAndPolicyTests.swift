@@ -1,3 +1,4 @@
+import Darwin
 import XCTest
 @testable import BookKit
 
@@ -6,6 +7,22 @@ final class OpenOptionsAndPolicyTests: XCTestCase {
         let options = OpenOptions()
         XCTAssertFalse(options.allowsNetwork)
         XCTAssertNil(options.tempDirectory)
+        XCTAssertGreaterThan(options.maxSourceBytes, 0)
+        XCTAssertGreaterThan(options.maxResourceBytes, 0)
+    }
+
+    func testSourceSizeLimitIsEnforced() {
+        let source = BookSource.data(Data(repeating: 0, count: 5), fileName: "large.epub")
+        XCTAssertThrowsError(try source.loadData(options: OpenOptions(maxSourceBytes: 4)))
+    }
+
+    @MainActor
+    func testBookParsingLeavesMainActor() async throws {
+        let book = try await Book.open(
+            source: .data(Data("%PDF-smoke".utf8), fileName: "smoke.pdf"),
+            registry: ParserRegistry(parsers: [NonMainThreadPDFParser()])
+        )
+        XCTAssertEqual(book.id, "background-parser")
     }
 
     func testSandboxPolicyAllowsReadingExistingFile() throws {
@@ -36,5 +53,30 @@ final class OpenOptionsAndPolicyTests: XCTestCase {
 
         let data = try source.loadData(options: OpenOptions())
         XCTAssertEqual(data, payload)
+    }
+}
+
+private struct NonMainThreadPDFParser: BookParser {
+    let formats: Set<BookFormat> = [.pdf]
+
+    func parse(source _: BookSource, options _: OpenOptions) async throws -> Book {
+        if pthread_main_np() != 0 {
+            throw BookError.io("Parser ran on the main thread")
+        }
+        return Book(
+            id: "background-parser",
+            format: .pdf,
+            version: "1",
+            metadata: Metadata(title: "Background", authors: []),
+            readingOrder: [
+                Chapter(id: "one", href: "pdf://page/1", title: "One", content: "One"),
+            ],
+            assets: [],
+            tableOfContents: [],
+            landmarks: [],
+            pageList: [],
+            rawExtensions: [:],
+            diagnostics: []
+        )
     }
 }

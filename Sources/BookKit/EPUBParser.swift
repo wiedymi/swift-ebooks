@@ -16,6 +16,26 @@ public struct EPUBParser: BookParser {
             throw BookError.invalidContainer("Unable to read EPUB zip archive")
         }
 
+        var totalUncompressedBytes: UInt64 = 0
+        for entry in archive where entry.type != .directory {
+            guard entry.uncompressedSize <= UInt64(options.maxResourceBytes) else {
+                throw BookError.invalidContainer(
+                    "EPUB entry \(entry.path) exceeds the configured resource size limit"
+                )
+            }
+            let (nextTotal, overflow) = totalUncompressedBytes.addingReportingOverflow(
+                entry.uncompressedSize
+            )
+            guard !overflow,
+                  nextTotal <= UInt64(options.maxArchiveUncompressedBytes)
+            else {
+                throw BookError.invalidContainer(
+                    "EPUB archive exceeds the configured uncompressed size limit"
+                )
+            }
+            totalUncompressedBytes = nextTotal
+        }
+
         guard let containerData = try readEntry(at: "META-INF/container.xml", archive: archive) else {
             throw BookError.invalidContainer("Missing META-INF/container.xml")
         }
@@ -36,16 +56,35 @@ public struct EPUBParser: BookParser {
         var diagnostics: [BookDiagnostic] = []
 
         let spineOrder = opf.spine.isEmpty ? opf.manifest.keys.sorted() : opf.spine
-        let manifestByNormalizedHref = Dictionary(
-            uniqueKeysWithValues: opf.manifest.values.map { item in
-                (normalizeRelativePath(item.href), item)
-            }
-        )
+        var manifestByNormalizedHref: [String: OPFDocument.ManifestItem] = [:]
+        for item in opf.manifest.values {
+            manifestByNormalizedHref[normalizeRelativePath(item.href)] = item
+        }
         let spineNormalizedHrefs = Set(
             spineOrder.compactMap { id in
                 opf.manifest[id].map { normalizeRelativePath($0.href) }
             }
         )
+        var publicationStylesByHref: [String: String] = [:]
+        for item in opf.manifest.values where item.mediaType.lowercased() == "text/css" {
+            let path = joinZipPath(base: opfDirectory, relative: item.href)
+            guard let stylesheetData = try readEntry(at: path, archive: archive) else {
+                diagnostics.append(
+                    BookDiagnostic(
+                        severity: .warning,
+                        code: "epub.missing-stylesheet",
+                        message: "Missing stylesheet at \(path)",
+                        location: path
+                    )
+                )
+                continue
+            }
+            publicationStylesByHref[normalizeRelativePath(item.href)] = rewriteCSSReferences(
+                in: stylesheetData.bestEffortString(),
+                stylesheetHref: item.href,
+                manifestByNormalizedHref: manifestByNormalizedHref
+            )
+        }
 
         for itemID in spineOrder {
             guard let item = opf.manifest[itemID] else {
@@ -64,12 +103,22 @@ public struct EPUBParser: BookParser {
             }
 
             let html = chapterData.bestEffortString()
-            let content = rewriteReferences(
+            let body = rewriteReferences(
                 in: extractBodyContent(from: html),
                 chapterHref: item.href,
                 manifestByNormalizedHref: manifestByNormalizedHref,
                 spineNormalizedHrefs: spineNormalizedHrefs
             )
+            let linkedStyles = stylesheetHrefs(in: html).compactMap { rawHref -> String? in
+                guard !hasScheme(rawHref) else { return nil }
+                let resolved = resolveRelativePath(baseHref: item.href, relativePath: rawHref)
+                return publicationStylesByHref[normalizeRelativePath(resolved)]
+            }
+            let inlineStyles = html.allMatches(for: "<style\\b[^>]*>(.*?)</style>")
+            let publicationCSS = (linkedStyles + inlineStyles).joined(separator: "\n")
+            let content = publicationCSS.isEmpty
+                ? body
+                : "<style data-bookkit-publication>\(publicationCSS)</style>\n\(body)"
             let title = html.firstMatch(for: "<title[^>]*>(.*?)</title>")
                 ?? html.firstMatch(for: "<h1[^>]*>(.*?)</h1>")
 
@@ -93,9 +142,61 @@ public struct EPUBParser: BookParser {
             assets.append(Asset(id: item.id, href: item.href, mediaType: item.mediaType, data: payload))
         }
 
-        let toc = chapters.map { chapter in
-            TOCNode(title: chapter.title ?? chapter.id, href: chapter.href)
+        var navigation = EPUBNavigationDocument()
+        if let navigationItem = opf.manifest.values.first(where: { $0.properties.contains("nav") }) {
+            let path = joinZipPath(base: opfDirectory, relative: navigationItem.href)
+            if let data = try readEntry(at: path, archive: archive) {
+                do {
+                    navigation = try EPUBNavigationParser.parseNavigationDocument(
+                        data,
+                        documentHref: navigationItem.href
+                    )
+                } catch {
+                    diagnostics.append(
+                        BookDiagnostic(
+                            severity: .warning,
+                            code: "epub.invalid-navigation-document",
+                            message: String(describing: error),
+                            location: path
+                        )
+                    )
+                }
+            }
         }
+
+        if navigation.tableOfContents.isEmpty,
+           let ncxItem = opf.spineTOCID.flatMap({ opf.manifest[$0] })
+            ?? opf.manifest.values.first(where: { $0.mediaType == "application/x-dtbncx+xml" })
+        {
+            let path = joinZipPath(base: opfDirectory, relative: ncxItem.href)
+            if let data = try readEntry(at: path, archive: archive) {
+                do {
+                    let ncx = try EPUBNavigationParser.parseNCX(
+                        data,
+                        documentHref: ncxItem.href
+                    )
+                    navigation.tableOfContents = ncx.tableOfContents
+                    if navigation.pageList.isEmpty {
+                        navigation.pageList = ncx.pageList
+                    }
+                } catch {
+                    diagnostics.append(
+                        BookDiagnostic(
+                            severity: .warning,
+                            code: "epub.invalid-ncx",
+                            message: String(describing: error),
+                            location: path
+                        )
+                    )
+                }
+            }
+        }
+
+        let toc = navigation.tableOfContents.isEmpty
+            ? chapters.map { chapter in
+                TOCNode(title: chapter.title ?? chapter.id, href: chapter.href)
+            }
+            : navigation.tableOfContents
 
         let metadata = Metadata(
             title: opf.title ?? chapters.first?.title ?? "Untitled",
@@ -107,15 +208,15 @@ public struct EPUBParser: BookParser {
         )
 
         return Book(
-            id: opf.identifier ?? UUID().uuidString,
+            id: opf.identifier ?? DeterministicIdentifier.make(namespace: "epub", data: data),
             format: .epub,
             version: opf.version ?? "3.0",
             metadata: metadata,
             readingOrder: chapters,
             assets: assets,
             tableOfContents: toc,
-            landmarks: [],
-            pageList: [],
+            landmarks: navigation.landmarks,
+            pageList: navigation.pageList,
             rawExtensions: [:],
             diagnostics: diagnostics
         )
@@ -190,7 +291,7 @@ public struct EPUBParser: BookParser {
         manifestByNormalizedHref: [String: OPFDocument.ManifestItem],
         spineNormalizedHrefs: Set<String>
     ) -> String {
-        let pattern = "(?i)(href|src)\\s*=\\s*(\"([^\"]*)\"|'([^']*)')"
+        let pattern = "(?i)(href|src|poster|srcset)\\s*=\\s*(\"([^\"]*)\"|'([^']*)')"
         guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
             return html
         }
@@ -243,6 +344,23 @@ public struct EPUBParser: BookParser {
         spineNormalizedHrefs: Set<String>
     ) -> String {
         let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if attribute.lowercased() == "srcset" {
+            return trimmed.split(separator: ",", omittingEmptySubsequences: true)
+                .map { candidate in
+                    let parts = candidate.split(whereSeparator: { $0.isWhitespace })
+                    guard let source = parts.first else { return String(candidate) }
+                    let descriptor = parts.dropFirst().joined(separator: " ")
+                    let rewritten = rewriteReferenceValue(
+                        String(source),
+                        attribute: "src",
+                        chapterHref: chapterHref,
+                        manifestByNormalizedHref: manifestByNormalizedHref,
+                        spineNormalizedHrefs: spineNormalizedHrefs
+                    )
+                    return descriptor.isEmpty ? rewritten : "\(rewritten) \(descriptor)"
+                }
+                .joined(separator: ", ")
+        }
         if trimmed.isEmpty || trimmed.hasPrefix("#") || hasScheme(trimmed) {
             return rawValue
         }
@@ -271,7 +389,7 @@ public struct EPUBParser: BookParser {
             return normalizedPath
         }
 
-        if lowerAttr == "href" || lowerAttr == "src" {
+        if lowerAttr == "href" || lowerAttr == "src" || lowerAttr == "poster" {
             return "bookkit://asset/\(manifestItem.id)"
         }
 
@@ -293,6 +411,55 @@ public struct EPUBParser: BookParser {
 
     private func hasScheme(_ value: String) -> Bool {
         value.range(of: "^[a-zA-Z][a-zA-Z0-9+.-]*:", options: .regularExpression) != nil
+    }
+
+    private func stylesheetHrefs(in html: String) -> [String] {
+        html.allMatches(for: "(<link\\b[^>]*>)").compactMap { tag in
+            guard let rel = tag.firstMatch(for: "\\brel\\s*=\\s*['\"]([^'\"]+)['\"]"),
+                  rel.lowercased().split(whereSeparator: \.isWhitespace).contains("stylesheet")
+            else {
+                return nil
+            }
+            return tag.firstMatch(for: "\\bhref\\s*=\\s*['\"]([^'\"]+)['\"]")
+        }
+    }
+
+    private func rewriteCSSReferences(
+        in css: String,
+        stylesheetHref: String,
+        manifestByNormalizedHref: [String: OPFDocument.ManifestItem]
+    ) -> String {
+        let pattern = "(?i)url\\(\\s*(['\"]?)([^)'\"]+)\\1\\s*\\)"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return css
+        }
+
+        var output = css
+        let matches = regex.matches(
+            in: output,
+            range: NSRange(output.startIndex..<output.endIndex, in: output)
+        )
+        for match in matches.reversed() {
+            guard let fullRange = Range(match.range(at: 0), in: output),
+                  let valueRange = Range(match.range(at: 2), in: output)
+            else {
+                continue
+            }
+            let rawValue = String(output[valueRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !rawValue.isEmpty,
+                  !rawValue.hasPrefix("#"),
+                  !rawValue.lowercased().hasPrefix("data:"),
+                  !hasScheme(rawValue)
+            else {
+                continue
+            }
+            let resolved = resolveRelativePath(baseHref: stylesheetHref, relativePath: rawValue)
+            guard let item = manifestByNormalizedHref[normalizeRelativePath(resolved)] else {
+                continue
+            }
+            output.replaceSubrange(fullRange, with: "url(\"bookkit://asset/\(item.id)\")")
+        }
+        return output
     }
 }
 
@@ -332,6 +499,7 @@ private struct OPFDocument {
         let id: String
         let href: String
         let mediaType: String
+        let properties: Set<String>
     }
 
     var version: String?
@@ -343,6 +511,7 @@ private struct OPFDocument {
     var modifiedDate: String?
     var manifest: [String: ManifestItem]
     var spine: [String]
+    var spineTOCID: String?
 
     static func parse(_ data: Data) throws -> OPFDocument {
         let delegate = OPFXMLDelegate()
@@ -358,7 +527,8 @@ private struct OPFDocument {
                 identifier: delegate.identifier,
                 modifiedDate: delegate.modifiedDate,
                 manifest: delegate.manifest,
-                spine: delegate.spine
+                spine: delegate.spine,
+                spineTOCID: delegate.spineTOCID
             )
         }
         throw BookError.malformedDocument("Failed to parse OPF package")
@@ -375,6 +545,7 @@ private final class OPFXMLDelegate: NSObject, XMLParserDelegate {
     var modifiedDate: String?
     var manifest: [String: OPFDocument.ManifestItem] = [:]
     var spine: [String] = []
+    var spineTOCID: String?
 
     private var elementStack: [String] = []
     private var currentText = ""
@@ -399,7 +570,21 @@ private final class OPFXMLDelegate: NSObject, XMLParserDelegate {
            let href = attributeDict["href"]
         {
             let mediaType = attributeDict["media-type"] ?? "application/octet-stream"
-            manifest[id] = OPFDocument.ManifestItem(id: id, href: href, mediaType: mediaType)
+            let properties = Set(
+                (attributeDict["properties"] ?? "")
+                    .split(whereSeparator: \.isWhitespace)
+                    .map(String.init)
+            )
+            manifest[id] = OPFDocument.ManifestItem(
+                id: id,
+                href: href,
+                mediaType: mediaType,
+                properties: properties
+            )
+        }
+
+        if local == "spine" {
+            spineTOCID = attributeDict["toc"]
         }
 
         if local == "itemref", let idref = attributeDict["idref"] {

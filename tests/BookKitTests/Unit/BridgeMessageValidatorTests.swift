@@ -59,4 +59,28 @@ final class BridgeMessageValidatorTests: XCTestCase {
 
         XCTAssertEqual(event, .decorationTapped(id: "highlight-1", group: .highlight))
     }
+
+    func testDecodesCustomBridgeMessage() {
+        let event = BridgeMessageValidator.decode(body: [
+            "type": "custom",
+            "name": "example.selection",
+            "payload": [
+                "text": "hello",
+                "count": 2,
+                "active": true,
+            ],
+        ])
+
+        XCTAssertEqual(
+            event,
+            .custom(
+                name: "example.selection",
+                payload: .object([
+                    "text": .string("hello"),
+                    "count": .number(2),
+                    "active": .bool(true),
+                ])
+            )
+        )
+    }
 }
