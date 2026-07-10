@@ -3,7 +3,12 @@
 Date: 2026-07-10
 
 This document is the source of truth for implemented behavior. `SPEC.md` is the
-architecture target; a checked box here means the behavior is backed by automated tests.
+v1 product contract; an `Implemented` entry here means the behavior is backed by
+automated tests.
+
+Related guides: [`API.md`](API.md), [`ARCHITECTURE.md`](ARCHITECTURE.md),
+[`BRIDGE_EXTENSIONS.md`](BRIDGE_EXTENSIONS.md), and
+[`TEST_COVERAGE.md`](TEST_COVERAGE.md).
 
 ## Reader and navigation
 
@@ -74,6 +79,22 @@ Implemented:
 - source, per-resource, and total uncompressed EPUB limits
 - EPUB entry/path normalization and security-scoped file policy
 - asynchronous URL loading and parsing off the main actor
+
+## Verification evidence
+
+- deterministic unit coverage for navigation, state, policy, sanitization, and
+  bridge payloads
+- live offscreen `WKWebView` integration coverage for isolation, accessibility,
+  links, lifecycle hooks, commands, and position reporting
+- checksum-pinned EPUB, FB2, MOBI, AZW3, and PDF corpus fixtures
+- semantic corpus assertions for structure, navigation, assets, metadata, and
+  search results
+- debug/release SwiftPM builds and conditional-compilation builds for iOS, tvOS,
+  and visionOS
+- deterministic `BookKitExample --demo <path>` runtime readiness markers
+
+See [`TEST_COVERAGE.md`](TEST_COVERAGE.md) for commands and the exact boundary of
+what those checks prove.
 
 ## Remaining roadmap
 

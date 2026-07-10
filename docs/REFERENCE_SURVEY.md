@@ -1,5 +1,9 @@
 # Ebook Library Reference Survey (2026-02-22)
 
+> This is a dated discovery snapshot. Repository popularity figures may change;
+> the checked-in submodule revisions and license files are the implementation
+> reference source of truth. See [`README.md`](README.md) for current BookKit docs.
+
 This survey focuses on:
 
 - Rust-first parsing libraries
