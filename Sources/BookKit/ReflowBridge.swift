@@ -23,6 +23,7 @@ public protocol ReflowBridge: AnyObject {
     func setTypography(_ typography: Typography) async throws
     func setDecorations(_ decorations: [Decoration]) async throws
     func setAccessibility(_ settings: ReaderAccessibilitySettings) async throws
+    func setPublicationLayout(_ layout: PublicationLayout) async throws
     func setNetworkAccessAllowed(_ allowed: Bool) async throws
     func callPlugin(_ name: String, payload: BridgeValue) async throws -> BridgeValue
     func measurePages() async throws
@@ -30,6 +31,7 @@ public protocol ReflowBridge: AnyObject {
 
 public extension ReflowBridge {
     func setAccessibility(_: ReaderAccessibilitySettings) async throws {}
+    func setPublicationLayout(_: PublicationLayout) async throws {}
     func setNetworkAccessAllowed(_: Bool) async throws {}
 
     func callPlugin(_: String, payload _: BridgeValue) async throws -> BridgeValue {

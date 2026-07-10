@@ -12,6 +12,7 @@ final class MockReflowBridge: ReflowBridge {
         case setTypography(Typography)
         case setDecorations([Decoration])
         case setAccessibility(ReaderAccessibilitySettings)
+        case setPublicationLayout(PublicationLayout)
         case setNetworkAccessAllowed(Bool)
         case measurePages
     }
@@ -69,6 +70,10 @@ final class MockReflowBridge: ReflowBridge {
 
     func setAccessibility(_ settings: ReaderAccessibilitySettings) async throws {
         commands.append(.setAccessibility(settings))
+    }
+
+    func setPublicationLayout(_ layout: PublicationLayout) async throws {
+        commands.append(.setPublicationLayout(layout))
     }
 
     func setNetworkAccessAllowed(_ allowed: Bool) async throws {

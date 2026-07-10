@@ -62,6 +62,33 @@ final class ContentRendererTests: XCTestCase {
         XCTAssertEqual(current.spineIndex, 1)
     }
 
+    func testPDFTableOfContentsNavigationUsesNativePageHref() async throws {
+        let destination = TOCNode(title: "Page two", href: "pdf://page/2")
+        let book = Book(
+            id: "pdf-toc",
+            format: .pdf,
+            version: "1.7",
+            metadata: Metadata(title: "PDF", authors: []),
+            readingOrder: [
+                Chapter(id: "p1", href: "pdf://page/1", title: "One", content: ""),
+                Chapter(id: "p2", href: "pdf://page/2", title: "Two", content: ""),
+            ],
+            assets: [],
+            tableOfContents: [destination],
+            landmarks: [],
+            pageList: [],
+            rawExtensions: [:],
+            diagnostics: [],
+            presentation: BookPresentation(layout: .fixed)
+        )
+        let renderer = try ContentRenderer(book: book)
+
+        try await renderer.go(to: destination)
+
+        let position = await renderer.currentPosition()
+        XCTAssertEqual(position.spineIndex, 1)
+    }
+
     func testLinkPolicyBlocksExternalByDefault() async throws {
         let bridge = MockReflowBridge()
         let book = Book(
@@ -525,5 +552,59 @@ final class ContentRendererTests: XCTestCase {
             return html
         }.last
         XCTAssertFalse(renderedHTML?.contains("tracker.example") == true)
+    }
+
+    func testFixedPageLinkUsesPolicyAndNativePageNavigation() async throws {
+        let page = PagePresentation(pixelWidth: 100, pixelHeight: 200)
+        let book = Book(
+            id: "fixed-links",
+            format: .cbz,
+            version: "1",
+            metadata: Metadata(title: "Fixed", authors: []),
+            readingOrder: [
+                Chapter(
+                    id: "page-1",
+                    href: "page-1",
+                    title: "One",
+                    content: "",
+                    resourceID: "image-1",
+                    mediaType: "image/png",
+                    page: page
+                ),
+                Chapter(
+                    id: "page-2",
+                    href: "page-2",
+                    title: "Two",
+                    content: "",
+                    resourceID: "image-2",
+                    mediaType: "image/png",
+                    page: page
+                ),
+            ],
+            assets: [
+                Asset(id: "image-1", href: "one.png", mediaType: "image/png", data: Data([1])),
+                Asset(id: "image-2", href: "two.png", mediaType: "image/png", data: Data([2])),
+            ],
+            tableOfContents: [],
+            landmarks: [],
+            pageList: [],
+            rawExtensions: [:],
+            diagnostics: [],
+            presentation: BookPresentation(layout: .fixed)
+        )
+        let renderer = try ContentRenderer(book: book)
+        let action = try await renderer.handlePageLink(
+            PageLink(
+                href: "page-2",
+                title: "Next page",
+                bounds: PageRectangle(x: 0, y: 0, width: 10, height: 10)
+            ),
+            onPageAt: 0
+        )
+
+        XCTAssertEqual(action, .follow)
+        let position = await renderer.currentPosition()
+        XCTAssertEqual(position.spineIndex, 1)
+        XCTAssertTrue(renderer.canGoBack())
     }
 }

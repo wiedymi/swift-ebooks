@@ -57,6 +57,7 @@ public enum RenderMode: Sendable, Equatable {
     case reflow
     case fixed
     case pdf
+    case audio
 }
 
 public struct PageMap: Sendable, Equatable {

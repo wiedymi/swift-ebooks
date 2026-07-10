@@ -6,7 +6,26 @@ public struct FB2Parser: BookParser {
     public init() {}
 
     public func parse(source: BookSource, options: OpenOptions) async throws -> Book {
-        let data = try source.loadData(options: options)
+        var data = try source.loadData(options: options)
+        var effectiveFileName = source.fileName
+        var isCompressed = false
+        if data.starts(with: Data([0x50, 0x4b, 0x03, 0x04])) {
+            let archive = try SafeZIPArchive(data: data, options: options, kind: "FB2")
+            let documents = archive.files.map(\.path).filter {
+                ($0 as NSString).pathExtension.caseInsensitiveCompare("fb2") == .orderedSame
+            }
+            guard documents.count == 1, let path = documents.first else {
+                throw BookError.invalidContainer(
+                    "Compressed FB2 must contain exactly one .fb2 document"
+                )
+            }
+            guard let payload = try archive.data(at: path) else {
+                throw BookError.invalidContainer("Unable to extract compressed FB2 document")
+            }
+            data = payload
+            effectiveFileName = (path as NSString).lastPathComponent
+            isCompressed = true
+        }
         let root = try FB2XML.parse(data)
         guard root.localName == "FictionBook" else {
             throw BookError.invalidContainer("FB2 root element is not FictionBook")
@@ -18,7 +37,7 @@ public struct FB2Parser: BookParser {
         let publishInfo = description?.child(named: "publish-info")
 
         let title = titleInfo?.child(named: "book-title")?.plainText.normalizedWhitespace()
-            .nonEmpty ?? source.fileName ?? "Untitled"
+            .nonEmpty ?? effectiveFileName ?? "Untitled"
         let authors = titleInfo?.children(named: "author").compactMap(authorName) ?? []
         let language = titleInfo?.child(named: "lang")?.plainText.normalizedWhitespace().nonEmpty
         let publisher = publishInfo?.child(named: "publisher")?.plainText.normalizedWhitespace().nonEmpty
@@ -159,7 +178,7 @@ public struct FB2Parser: BookParser {
             tableOfContents: tableOfContents,
             landmarks: landmarks,
             pageList: [],
-            rawExtensions: [:],
+            rawExtensions: isCompressed ? ["bookkit:container": "fb2.zip"] : [:],
             diagnostics: diagnostics
         )
     }

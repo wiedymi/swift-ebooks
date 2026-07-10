@@ -8,6 +8,7 @@ public struct EPUBParser: BookParser {
 
     public func parse(source: BookSource, options: OpenOptions) async throws -> Book {
         let data = try source.loadData(options: options)
+        try ZIPArchiveSecurity.validateUnencryptedEntries(in: data)
 
         let archive: Archive
         do {
@@ -36,6 +37,14 @@ public struct EPUBParser: BookParser {
             totalUncompressedBytes = nextTotal
         }
 
+        let encryptionManifest: EPUBEncryptionManifest
+        if let encryptionData = try readEntry(at: "META-INF/encryption.xml", archive: archive) {
+            encryptionManifest = try EPUBEncryptionManifest.parse(encryptionData)
+            try encryptionManifest.validateDRMFree()
+        } else {
+            encryptionManifest = EPUBEncryptionManifest(entries: [])
+        }
+
         guard let containerData = try readEntry(at: "META-INF/container.xml", archive: archive) else {
             throw BookError.invalidContainer("Missing META-INF/container.xml")
         }
@@ -51,11 +60,27 @@ public struct EPUBParser: BookParser {
 
         let opf = try OPFDocument.parse(opfData)
         let opfDirectory = (opfPath as NSString).deletingLastPathComponent
+        let obfuscatedPaths = encryptionManifest.obfuscatedResourcePaths
+        if !obfuscatedPaths.isEmpty, opf.identifier == nil {
+            throw BookError.malformedDocument(
+                "EPUB font obfuscation requires a publication unique identifier"
+            )
+        }
 
         var chapters: [Chapter] = []
+        var spineAssets: [Asset] = []
         var diagnostics: [BookDiagnostic] = []
 
         let spineOrder = opf.spine.isEmpty ? opf.manifest.keys.sorted() : opf.spine
+        let isImageOnly = !spineOrder.isEmpty && spineOrder.allSatisfy { id in
+            opf.manifest[id].map { isImageMediaType($0.mediaType) } ?? false
+        }
+        let isFixedLayout = opf.renditionLayout?.lowercased() == "pre-paginated" || isImageOnly
+        let readingProgression: ReadingProgression = opf.pageProgressionDirection?.lowercased() == "rtl"
+            ? .rightToLeft
+            : .leftToRight
+        let coverID = opf.manifest.values.first(where: { $0.properties.contains("cover-image") })?.id
+        let coverPageIndex = coverID.flatMap(spineOrder.firstIndex(of:))
         var manifestByNormalizedHref: [String: OPFDocument.ManifestItem] = [:]
         for item in opf.manifest.values {
             manifestByNormalizedHref[normalizeRelativePath(item.href)] = item
@@ -92,17 +117,63 @@ public struct EPUBParser: BookParser {
                 continue
             }
 
+            let path = joinZipPath(base: opfDirectory, relative: item.href)
+            let spineProperties = opf.spineProperties[itemID] ?? []
+            var pagePresentation = isFixedLayout ? PagePresentation(
+                side: pageSide(
+                    properties: spineProperties,
+                    index: chapters.count,
+                    coverPageIndex: coverPageIndex,
+                    progression: readingProgression
+                ),
+                isCover: itemID == coverID
+            ) : nil
+
+            if isImageMediaType(item.mediaType) {
+                guard let payload = try readEntry(at: path, archive: archive) else {
+                    diagnostics.append(
+                        BookDiagnostic(
+                            severity: .warning,
+                            code: "epub.missing-image-page",
+                            message: "Missing fixed-layout image at \(path)",
+                            location: path
+                        )
+                    )
+                    continue
+                }
+                spineAssets.append(
+                    Asset(id: item.id, href: item.href, mediaType: item.mediaType, data: payload)
+                )
+                chapters.append(
+                    Chapter(
+                        id: item.id,
+                        href: item.href,
+                        title: itemID == coverID ? "Cover" : "Page \(chapters.count + 1)",
+                        content: "",
+                        resourceID: item.id,
+                        mediaType: item.mediaType,
+                        page: pagePresentation
+                    )
+                )
+                continue
+            }
+
             guard item.mediaType.contains("html") || item.href.lowercased().hasSuffix(".xhtml") || item.href.lowercased().hasSuffix(".html") else {
                 continue
             }
 
-            let path = joinZipPath(base: opfDirectory, relative: item.href)
             guard let chapterData = try readEntry(at: path, archive: archive) else {
                 diagnostics.append(BookDiagnostic(severity: .warning, code: "epub.missing-resource", message: "Missing chapter resource at \(path)"))
                 continue
             }
 
             let html = chapterData.bestEffortString()
+            if pagePresentation != nil,
+               let dimensions = fixedViewportDimensions(in: html)
+            {
+                pagePresentation?.pixelWidth = dimensions.width
+                pagePresentation?.pixelHeight = dimensions.height
+            }
             let body = rewriteReferences(
                 in: extractBodyContent(from: html),
                 chapterHref: item.href,
@@ -123,7 +194,14 @@ public struct EPUBParser: BookParser {
                 ?? html.firstMatch(for: "<h1[^>]*>(.*?)</h1>")
 
             chapters.append(
-                Chapter(id: item.id, href: item.href, title: title, content: content)
+                Chapter(
+                    id: item.id,
+                    href: item.href,
+                    title: title,
+                    content: content,
+                    mediaType: item.mediaType,
+                    page: pagePresentation
+                )
             )
         }
 
@@ -132,10 +210,24 @@ public struct EPUBParser: BookParser {
         }
 
         let spineIDs = Set(spineOrder)
-        var assets: [Asset] = []
+        var assets: [Asset] = spineAssets
         for item in opf.manifest.values.sorted(by: { $0.id < $1.id }) where !spineIDs.contains(item.id) {
             let path = joinZipPath(base: opfDirectory, relative: item.href)
-            let payload = try readEntry(at: path, archive: archive)
+            var payload = try readEntry(at: path, archive: archive)
+            if obfuscatedPaths.contains(normalizeZipPath(path)) {
+                guard isFontMediaType(item.mediaType), let identifier = opf.identifier else {
+                    throw BookError.protectedContent(
+                        ContentProtection(
+                            kind: .epubEncryption,
+                            scheme: EPUBEncryptionManifest.idpfFontObfuscation,
+                            resource: path
+                        )
+                    )
+                }
+                payload = payload.map {
+                    EPUBFontObfuscation.deobfuscate($0, uniqueIdentifier: identifier)
+                }
+            }
             if payload == nil {
                 diagnostics.append(BookDiagnostic(severity: .warning, code: "epub.missing-asset", message: "Missing asset at \(path)"))
             }
@@ -207,6 +299,10 @@ public struct EPUBParser: BookParser {
             publicationDate: opf.modifiedDate
         )
 
+        var rawExtensions: [String: String] = [:]
+        rawExtensions["bookkit:epub:rendition-layout"] = opf.renditionLayout
+        rawExtensions["bookkit:epub:rendition-spread"] = opf.renditionSpread
+
         return Book(
             id: opf.identifier ?? DeterministicIdentifier.make(namespace: "epub", data: data),
             format: .epub,
@@ -217,9 +313,63 @@ public struct EPUBParser: BookParser {
             tableOfContents: toc,
             landmarks: navigation.landmarks,
             pageList: navigation.pageList,
-            rawExtensions: [:],
-            diagnostics: diagnostics
+            rawExtensions: rawExtensions,
+            diagnostics: diagnostics,
+            presentation: BookPresentation(
+                layout: isFixedLayout ? .fixed : .reflowable,
+                readingProgression: readingProgression,
+                spread: opf.renditionSpread?.lowercased() == "none" ? .none : .auto,
+                coverPageIndex: coverPageIndex
+            )
         )
+    }
+
+    private func isImageMediaType(_ mediaType: String) -> Bool {
+        mediaType.lowercased().hasPrefix("image/") && mediaType.lowercased() != "image/svg+xml"
+    }
+
+    private func pageSide(
+        properties: Set<String>,
+        index: Int,
+        coverPageIndex: Int?,
+        progression: ReadingProgression
+    ) -> PageSide? {
+        if properties.contains(where: { $0.hasSuffix("page-spread-center") }) { return .center }
+        if properties.contains(where: { $0.hasSuffix("page-spread-left") }) { return .left }
+        if properties.contains(where: { $0.hasSuffix("page-spread-right") }) { return .right }
+        if index == coverPageIndex { return .center }
+        guard coverPageIndex != nil else { return nil }
+        let offset = index - (coverPageIndex ?? 0)
+        if progression == .rightToLeft {
+            return offset.isMultiple(of: 2) ? .left : .right
+        }
+        return offset.isMultiple(of: 2) ? .right : .left
+    }
+
+    private func fixedViewportDimensions(in html: String) -> (width: Int, height: Int)? {
+        guard let tag = html.allMatches(for: "(<meta\\b[^>]*\\bname\\s*=\\s*['\"]viewport['\"][^>]*>)").first,
+              let content = tag.firstMatch(for: "\\bcontent\\s*=\\s*['\"]([^'\"]+)['\"]"),
+              let widthValue = content.firstMatch(for: "(?:^|[,;\\s])width\\s*=\\s*([0-9]+)"),
+              let heightValue = content.firstMatch(for: "(?:^|[,;\\s])height\\s*=\\s*([0-9]+)"),
+              let width = Int(widthValue),
+              let height = Int(heightValue),
+              width > 0,
+              height > 0
+        else {
+            return nil
+        }
+        return (width, height)
+    }
+
+    private func isFontMediaType(_ mediaType: String) -> Bool {
+        let normalized = mediaType.lowercased()
+        return normalized.hasPrefix("font/") || [
+            "application/font-sfnt",
+            "application/vnd.ms-opentype",
+            "application/vnd.ms-fontobject",
+            "application/x-font-opentype",
+            "application/x-font-truetype",
+        ].contains(normalized)
     }
 
     private func readEntry(at path: String, archive: Archive) throws -> Data? {
@@ -512,6 +662,10 @@ private struct OPFDocument {
     var manifest: [String: ManifestItem]
     var spine: [String]
     var spineTOCID: String?
+    var spineProperties: [String: Set<String>]
+    var renditionLayout: String?
+    var renditionSpread: String?
+    var pageProgressionDirection: String?
 
     static func parse(_ data: Data) throws -> OPFDocument {
         let delegate = OPFXMLDelegate()
@@ -528,7 +682,11 @@ private struct OPFDocument {
                 modifiedDate: delegate.modifiedDate,
                 manifest: delegate.manifest,
                 spine: delegate.spine,
-                spineTOCID: delegate.spineTOCID
+                spineTOCID: delegate.spineTOCID,
+                spineProperties: delegate.spineProperties,
+                renditionLayout: delegate.renditionLayout,
+                renditionSpread: delegate.renditionSpread,
+                pageProgressionDirection: delegate.pageProgressionDirection
             )
         }
         throw BookError.malformedDocument("Failed to parse OPF package")
@@ -546,9 +704,14 @@ private final class OPFXMLDelegate: NSObject, XMLParserDelegate {
     var manifest: [String: OPFDocument.ManifestItem] = [:]
     var spine: [String] = []
     var spineTOCID: String?
+    var spineProperties: [String: Set<String>] = [:]
+    var renditionLayout: String?
+    var renditionSpread: String?
+    var pageProgressionDirection: String?
 
     private var elementStack: [String] = []
     private var currentText = ""
+    private var currentMetaProperty: String?
 
     func parser(
         _: XMLParser,
@@ -585,17 +748,23 @@ private final class OPFXMLDelegate: NSObject, XMLParserDelegate {
 
         if local == "spine" {
             spineTOCID = attributeDict["toc"]
+            pageProgressionDirection = attributeDict["page-progression-direction"]
         }
 
         if local == "itemref", let idref = attributeDict["idref"] {
             spine.append(idref)
+            spineProperties[idref] = Set(
+                (attributeDict["properties"] ?? "")
+                    .split(whereSeparator: \.isWhitespace)
+                    .map(String.init)
+            )
         }
 
-        if local == "meta",
-           attributeDict["property"] == "dcterms:modified",
-           let content = attributeDict["content"]
-        {
-            modifiedDate = content
+        if local == "meta" {
+            currentMetaProperty = attributeDict["property"] ?? attributeDict["name"]
+            if currentMetaProperty == "dcterms:modified", let content = attributeDict["content"] {
+                modifiedDate = content
+            }
         }
     }
 
@@ -612,7 +781,15 @@ private final class OPFXMLDelegate: NSObject, XMLParserDelegate {
         let local = localName(elementName)
         let value = currentText.normalizedWhitespace()
 
-        if !value.isEmpty {
+        if local == "meta", let property = currentMetaProperty, !value.isEmpty {
+            switch property {
+            case "dcterms:modified": modifiedDate = value
+            case "rendition:layout": renditionLayout = value
+            case "rendition:spread": renditionSpread = value
+            default: break
+            }
+            currentMetaProperty = nil
+        } else if !value.isEmpty {
             switch local {
             case "title":
                 if title == nil { title = value }

@@ -148,12 +148,26 @@ public actor Reader {
 
     private static func clamp(position: Position, chapterCount: Int) -> Position {
         guard chapterCount > 0 else {
-            return Position(spineIndex: 0, progression: 0, cfi: position.cfi, fragment: position.fragment, textContext: position.textContext)
+            return Position(
+                spineIndex: 0,
+                progression: 0,
+                cfi: position.cfi,
+                fragment: position.fragment,
+                textContext: position.textContext,
+                timestamp: position.timestamp
+            )
         }
 
         let index = min(max(position.spineIndex, 0), chapterCount - 1)
         let progression = min(max(position.progression, 0), 1)
-        return Position(spineIndex: index, progression: progression, cfi: position.cfi, fragment: position.fragment, textContext: position.textContext)
+        return Position(
+            spineIndex: index,
+            progression: progression,
+            cfi: position.cfi,
+            fragment: position.fragment,
+            textContext: position.textContext,
+            timestamp: position.timestamp
+        )
     }
 
     private func persist() async throws {

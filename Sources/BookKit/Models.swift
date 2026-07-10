@@ -1,5 +1,122 @@
 import Foundation
 
+public enum PublicationLayout: String, Sendable, Equatable, Hashable, Codable {
+    case reflowable
+    case fixed
+    case audiobook
+}
+
+public enum ReadingProgression: String, Sendable, Equatable, Hashable, Codable {
+    case leftToRight
+    case rightToLeft
+}
+
+public enum SpreadBehavior: String, Sendable, Equatable, Hashable, Codable {
+    case auto
+    case none
+    case both
+}
+
+public struct BookPresentation: Sendable, Equatable, Hashable, Codable {
+    public var layout: PublicationLayout
+    public var readingProgression: ReadingProgression
+    public var spread: SpreadBehavior
+    public var coverPageIndex: Int?
+
+    public init(
+        layout: PublicationLayout = .reflowable,
+        readingProgression: ReadingProgression = .leftToRight,
+        spread: SpreadBehavior = .auto,
+        coverPageIndex: Int? = nil
+    ) {
+        self.layout = layout
+        self.readingProgression = readingProgression
+        self.spread = spread
+        self.coverPageIndex = coverPageIndex
+    }
+
+    public static let reflowable = BookPresentation()
+}
+
+public enum PageSide: String, Sendable, Equatable, Hashable, Codable {
+    case left
+    case right
+    case center
+}
+
+public struct PageRectangle: Sendable, Equatable, Hashable, Codable {
+    /// Horizontal source-pixel coordinate using a top-left origin.
+    public var x: Double
+    /// Vertical source-pixel coordinate using a top-left origin.
+    public var y: Double
+    public var width: Double
+    public var height: Double
+
+    public init(x: Double, y: Double, width: Double, height: Double) {
+        self.x = x
+        self.y = y
+        self.width = max(width, 0)
+        self.height = max(height, 0)
+    }
+}
+
+public struct PageLink: Sendable, Equatable, Hashable, Codable, Identifiable {
+    public var id: String
+    public var href: String
+    public var title: String?
+    /// Bounds in the page's source-pixel coordinate space with a top-left origin.
+    public var bounds: PageRectangle
+
+    public init(
+        id: String? = nil,
+        href: String,
+        title: String? = nil,
+        bounds: PageRectangle
+    ) {
+        self.id = id ?? "\(href)|\(bounds.x),\(bounds.y),\(bounds.width),\(bounds.height)"
+        self.href = href
+        self.title = title
+        self.bounds = bounds
+    }
+}
+
+public struct PagePresentation: Sendable, Equatable, Hashable, Codable {
+    public var side: PageSide?
+    public var isCover: Bool
+    public var isSpread: Bool
+    public var pixelWidth: Int?
+    public var pixelHeight: Int?
+    public var links: [PageLink]
+
+    public init(
+        side: PageSide? = nil,
+        isCover: Bool = false,
+        isSpread: Bool = false,
+        pixelWidth: Int? = nil,
+        pixelHeight: Int? = nil,
+        links: [PageLink] = []
+    ) {
+        self.side = side
+        self.isCover = isCover
+        self.isSpread = isSpread
+        self.pixelWidth = pixelWidth
+        self.pixelHeight = pixelHeight
+        self.links = links
+    }
+}
+
+public struct AudioPresentation: Sendable, Equatable, Hashable, Codable {
+    public var duration: Double?
+    public var clipBegin: Double
+    public var clipEnd: Double?
+
+    public init(duration: Double? = nil, clipBegin: Double = 0, clipEnd: Double? = nil) {
+        self.duration = duration
+        self.clipBegin = max(clipBegin, 0)
+        self.clipEnd = clipEnd
+    }
+}
+
 public struct Metadata: Sendable, Equatable {
     public var title: String
     public var authors: [String]
@@ -30,12 +147,29 @@ public struct Chapter: Sendable, Equatable {
     public var href: String
     public var title: String?
     public var content: String
+    public var resourceID: String?
+    public var mediaType: String?
+    public var page: PagePresentation?
+    public var audio: AudioPresentation?
 
-    public init(id: String, href: String, title: String?, content: String) {
+    public init(
+        id: String,
+        href: String,
+        title: String?,
+        content: String,
+        resourceID: String? = nil,
+        mediaType: String? = nil,
+        page: PagePresentation? = nil,
+        audio: AudioPresentation? = nil
+    ) {
         self.id = id
         self.href = href
         self.title = title
         self.content = content
+        self.resourceID = resourceID
+        self.mediaType = mediaType
+        self.page = page
+        self.audio = audio
     }
 }
 
@@ -119,19 +253,22 @@ public struct Position: Sendable, Equatable, Hashable, Codable {
     public var cfi: String?
     public var fragment: String?
     public var textContext: TextContext?
+    public var timestamp: Double?
 
     public init(
         spineIndex: Int,
         progression: Double,
         cfi: String? = nil,
         fragment: String? = nil,
-        textContext: TextContext? = nil
+        textContext: TextContext? = nil,
+        timestamp: Double? = nil
     ) {
         self.spineIndex = spineIndex
         self.progression = progression
         self.cfi = cfi
         self.fragment = fragment
         self.textContext = textContext
+        self.timestamp = timestamp
     }
 }
 
@@ -163,6 +300,7 @@ public struct Book: Sendable, Equatable {
     public var pageList: [TOCNode]
     public var rawExtensions: [String: String]
     public var diagnostics: [BookDiagnostic]
+    public var presentation: BookPresentation
 
     public init(
         id: String,
@@ -175,7 +313,8 @@ public struct Book: Sendable, Equatable {
         landmarks: [TOCNode],
         pageList: [TOCNode],
         rawExtensions: [String: String],
-        diagnostics: [BookDiagnostic]
+        diagnostics: [BookDiagnostic],
+        presentation: BookPresentation = .reflowable
     ) {
         self.id = id
         self.format = format
@@ -188,6 +327,7 @@ public struct Book: Sendable, Equatable {
         self.pageList = pageList
         self.rawExtensions = rawExtensions
         self.diagnostics = diagnostics
+        self.presentation = presentation
     }
 }
 

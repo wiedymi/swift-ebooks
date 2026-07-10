@@ -25,6 +25,7 @@ public struct OpenOptions: Sendable {
     public var maxSourceBytes: Int
     public var maxResourceBytes: Int
     public var maxArchiveUncompressedBytes: Int
+    public var maxArchiveEntries: Int
 
     public init(
         allowsNetwork: Bool = false,
@@ -32,7 +33,8 @@ public struct OpenOptions: Sendable {
         fileAccess: any FileAccessPolicy = SandboxFileAccessPolicy(),
         maxSourceBytes: Int = 512 * 1024 * 1024,
         maxResourceBytes: Int = 64 * 1024 * 1024,
-        maxArchiveUncompressedBytes: Int = 1024 * 1024 * 1024
+        maxArchiveUncompressedBytes: Int = 1024 * 1024 * 1024,
+        maxArchiveEntries: Int = 10_000
     ) {
         self.allowsNetwork = allowsNetwork
         self.tempDirectory = tempDirectory
@@ -40,6 +42,7 @@ public struct OpenOptions: Sendable {
         self.maxSourceBytes = max(maxSourceBytes, 1)
         self.maxResourceBytes = max(maxResourceBytes, 1)
         self.maxArchiveUncompressedBytes = max(maxArchiveUncompressedBytes, 1)
+        self.maxArchiveEntries = max(maxArchiveEntries, 1)
     }
 }
 

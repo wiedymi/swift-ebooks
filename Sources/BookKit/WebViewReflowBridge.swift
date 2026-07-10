@@ -258,6 +258,17 @@ public final class WebViewReflowBridge: NSObject, ReflowBridge, WKScriptMessageH
         try await evaluateJavaScript(js)
     }
 
+    public func setPublicationLayout(_ layout: PublicationLayout) async throws {
+        let js = """
+        (() => {
+          window.__bookkitPublicationLayout = \(Self.jsString(layout.rawValue));
+          if (window.BookKitNativeApplyReadingMode) window.BookKitNativeApplyReadingMode();
+          if (window.BookKitNativeMeasurePages) window.BookKitNativeMeasurePages();
+        })();
+        """
+        try await evaluateJavaScript(js)
+    }
+
     public func setNetworkAccessAllowed(_ allowed: Bool) async throws {
         allowsNetwork = allowed
     }
@@ -408,6 +419,7 @@ public final class WebViewReflowBridge: NSObject, ReflowBridge, WKScriptMessageH
       };
 
       const isPaginated = () => window.__bookkitReadingMode === 'paginated';
+      const isFixedLayout = () => window.__bookkitPublicationLayout === 'fixed';
       const clamp = value => Math.max(0, Math.min(1, value));
 
       window.BookKitNativeApplyReadingMode = () => {
@@ -415,7 +427,33 @@ public final class WebViewReflowBridge: NSObject, ReflowBridge, WKScriptMessageH
         const body = document.body;
         if (!root || !body) return;
 
-        if (isPaginated()) {
+        if (isFixedLayout()) {
+          root.style.overflow = 'hidden';
+          root.style.overflowX = 'hidden';
+          root.style.overflowY = 'hidden';
+          body.style.overflow = 'hidden';
+          body.style.columnGap = 'normal';
+          body.style.columnFill = 'balance';
+          body.style.columnWidth = 'auto';
+          body.style.width = `${Math.max(window.innerWidth || 1, 1)}px`;
+          body.style.height = `${Math.max(window.innerHeight || 1, 1)}px`;
+          body.style.maxWidth = 'none';
+          const page = document.getElementById('bookkit-fixed-page');
+          if (page) {
+            const declaredWidth = Math.max(Number(page.dataset.width) || window.innerWidth || 1, 1);
+            const declaredHeight = Math.max(Number(page.dataset.height) || window.innerHeight || 1, 1);
+            const scale = Math.min(
+              Math.max(window.innerWidth || 1, 1) / declaredWidth,
+              Math.max(window.innerHeight || 1, 1) / declaredHeight
+            );
+            page.style.position = 'absolute';
+            page.style.width = `${declaredWidth}px`;
+            page.style.height = `${declaredHeight}px`;
+            page.style.transform = `scale(${scale})`;
+            page.style.left = `${Math.max(((window.innerWidth || declaredWidth) - declaredWidth * scale) / 2, 0)}px`;
+            page.style.top = `${Math.max(((window.innerHeight || declaredHeight) - declaredHeight * scale) / 2, 0)}px`;
+          }
+        } else if (isPaginated()) {
           root.style.overflow = 'hidden';
           root.style.overflowX = 'auto';
           root.style.overflowY = 'hidden';
@@ -468,6 +506,7 @@ public final class WebViewReflowBridge: NSObject, ReflowBridge, WKScriptMessageH
       };
 
       const computeProgression = () => {
+        if (isFixedLayout()) return 0;
         const scrollingElement = document.scrollingElement || document.documentElement;
         if (isPaginated()) {
           const w = Math.max(document.documentElement.scrollWidth || 0, document.body ? document.body.scrollWidth || 0 : 0);
@@ -538,6 +577,7 @@ public final class WebViewReflowBridge: NSObject, ReflowBridge, WKScriptMessageH
       };
 
       window.BookKitNativeGoToProgression = progression => {
+        if (isFixedLayout()) return;
         const clamped = clamp(Number(progression || 0));
         const scrollingElement = document.scrollingElement || document.documentElement;
         if (isPaginated()) {
@@ -558,7 +598,10 @@ public final class WebViewReflowBridge: NSObject, ReflowBridge, WKScriptMessageH
       window.BookKitNativeMeasurePages = () => {
         let pageCount = 1;
         let dimension = 0;
-        if (isPaginated()) {
+        if (isFixedLayout()) {
+          pageCount = 1;
+          dimension = Math.max(window.innerHeight || 1, 1);
+        } else if (isPaginated()) {
           const w = Math.max(document.documentElement.scrollWidth || 0, document.body ? document.body.scrollWidth || 0 : 0);
           const vw = Math.max(window.innerWidth || 1, 1);
           pageCount = Math.max(1, Math.ceil(w / vw));

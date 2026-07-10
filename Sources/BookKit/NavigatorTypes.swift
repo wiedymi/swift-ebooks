@@ -90,6 +90,7 @@ public struct Locator: Sendable, Equatable, Hashable, Codable {
     public var anchor: String?
     public var cfi: String?
     public var textContext: TextContext?
+    public var timestamp: Double?
 
     public init(
         sectionIndex: Int,
@@ -98,7 +99,8 @@ public struct Locator: Sendable, Equatable, Hashable, Codable {
         totalProgression: Double,
         anchor: String?,
         cfi: String?,
-        textContext: TextContext?
+        textContext: TextContext?,
+        timestamp: Double? = nil
     ) {
         self.sectionIndex = max(sectionIndex, 0)
         self.sectionHref = sectionHref
@@ -107,6 +109,7 @@ public struct Locator: Sendable, Equatable, Hashable, Codable {
         self.anchor = anchor
         self.cfi = cfi
         self.textContext = textContext
+        self.timestamp = timestamp
     }
 
     public var position: Position {
@@ -115,7 +118,8 @@ public struct Locator: Sendable, Equatable, Hashable, Codable {
             progression: sectionProgression,
             cfi: cfi,
             fragment: anchor,
-            textContext: textContext
+            textContext: textContext,
+            timestamp: timestamp
         )
     }
 }
@@ -128,7 +132,8 @@ public extension Locator {
         totalProgression: 0,
         anchor: nil,
         cfi: nil,
-        textContext: nil
+        textContext: nil,
+        timestamp: nil
     )
 }
 
@@ -251,7 +256,29 @@ public extension Book {
         let sectionCount = max(readingOrder.count, 1)
         let index = min(max(position.spineIndex, 0), sectionCount - 1)
         let sectionProgression = min(max(position.progression, 0), 1)
-        let total = min(max((Double(index) + sectionProgression) / Double(sectionCount), 0), 1)
+        let total: Double
+        if presentation.layout == .audiobook, !readingOrder.isEmpty {
+            let durations = readingOrder.map { chapter -> Double in
+                let begin = chapter.audio?.clipBegin ?? 0
+                if let end = chapter.audio?.clipEnd, end >= begin {
+                    return end - begin
+                }
+                return max(chapter.audio?.duration ?? 0, 0)
+            }
+            let totalDuration = durations.reduce(0, +)
+            if totalDuration > 0 {
+                let preceding = durations.prefix(index).reduce(0, +)
+                let begin = readingOrder[index].audio?.clipBegin ?? 0
+                let elapsed = position.timestamp.map { $0 - begin }
+                    ?? sectionProgression * durations[index]
+                let local = min(max(elapsed, 0), durations[index])
+                total = min(max((preceding + local) / totalDuration, 0), 1)
+            } else {
+                total = min(max((Double(index) + sectionProgression) / Double(sectionCount), 0), 1)
+            }
+        } else {
+            total = min(max((Double(index) + sectionProgression) / Double(sectionCount), 0), 1)
+        }
         let href = readingOrder.indices.contains(index) ? readingOrder[index].href : nil
 
         return Locator(
@@ -261,7 +288,8 @@ public extension Book {
             totalProgression: total,
             anchor: position.fragment,
             cfi: position.cfi,
-            textContext: position.textContext
+            textContext: position.textContext,
+            timestamp: position.timestamp
         )
     }
 
@@ -277,11 +305,17 @@ public extension Book {
         let path: String
         let fragment: String?
         if let url = URL(string: trimmed), let scheme = url.scheme?.lowercased() {
-            guard scheme == "bookkit" else {
-                return nil
+            fragment = url.fragment?.removingPercentEncoding ?? url.fragment
+            if scheme != "bookkit" {
+                let target = navigationResourceKey(trimmed)
+                guard let index = readingOrder.firstIndex(where: {
+                    navigationResourceKey($0.href) == target
+                }) else {
+                    return nil
+                }
+                return locator(for: navigationPosition(index: index, fragment: fragment))
             }
             path = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            fragment = url.fragment?.removingPercentEncoding ?? url.fragment
         } else {
             let parts = trimmed.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
             path = parts.first.map(String.init) ?? ""
@@ -315,30 +349,80 @@ public extension Book {
             if let index = readingOrder.firstIndex(where: {
                 normalizeNavigationPath($0.href) == candidate
             }) {
-                return locator(
-                    for: Position(
-                        spineIndex: index,
-                        progression: 0,
-                        fragment: fragment
-                    )
-                )
+                return locator(for: navigationPosition(index: index, fragment: fragment))
             }
 
             if let index = readingOrder.firstIndex(where: {
                 let href = normalizeNavigationPath($0.href)
                 return href.hasSuffix("/" + candidate) || candidate.hasSuffix("/" + href)
             }) {
-                return locator(
-                    for: Position(
-                        spineIndex: index,
-                        progression: 0,
-                        fragment: fragment
-                    )
-                )
+                return locator(for: navigationPosition(index: index, fragment: fragment))
             }
         }
 
         return nil
+    }
+
+    private func navigationResourceKey(_ raw: String) -> String {
+        guard var components = URLComponents(string: raw) else {
+            return raw.split(
+                separator: "#",
+                maxSplits: 1,
+                omittingEmptySubsequences: false
+            ).first.map(String.init) ?? raw
+        }
+        components.fragment = nil
+        return components.string ?? raw
+    }
+
+    private func navigationPosition(index: Int, fragment: String?) -> Position {
+        guard presentation.layout == .audiobook,
+              readingOrder.indices.contains(index)
+        else {
+            return Position(spineIndex: index, progression: 0, fragment: fragment)
+        }
+
+        let audio = readingOrder[index].audio
+        let begin = audio?.clipBegin ?? 0
+        let duration: Double
+        if let end = audio?.clipEnd, end >= begin {
+            duration = end - begin
+        } else {
+            duration = max(audio?.duration ?? 0, 0)
+        }
+        let requested = fragment.flatMap(mediaFragmentTimestamp) ?? begin
+        let upper = duration > 0 ? begin + duration : max(requested, begin)
+        let timestamp = min(max(requested, begin), upper)
+        let progression = duration > 0 ? (timestamp - begin) / duration : 0
+        return Position(
+            spineIndex: index,
+            progression: min(max(progression, 0), 1),
+            fragment: fragment,
+            timestamp: timestamp
+        )
+    }
+
+    private func mediaFragmentTimestamp(_ fragment: String) -> Double? {
+        var value = fragment.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard value.lowercased().hasPrefix("t=") else { return nil }
+        value.removeFirst(2)
+        value = value.split(separator: ",", maxSplits: 1).first.map(String.init) ?? value
+        if value.lowercased().hasPrefix("npt:") {
+            value.removeFirst(4)
+        }
+        if let seconds = Double(value), seconds.isFinite, seconds >= 0 {
+            return seconds
+        }
+
+        let components = value.split(separator: ":").compactMap { Double($0) }
+        guard (2...3).contains(components.count),
+              components.allSatisfy({ $0.isFinite && $0 >= 0 })
+        else {
+            return nil
+        }
+        return components.reversed().enumerated().reduce(0) { result, item in
+            result + item.element * pow(60, Double(item.offset))
+        }
     }
 
     private func normalizeNavigationPath(_ raw: String) -> String {

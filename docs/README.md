@@ -6,7 +6,8 @@ rendering ebook publications on Apple platforms.
 ## Developer guides
 
 - [`API.md`](API.md) — opening books, constructing renderers, navigation,
-  persistence, accessibility, decorations, links, search, and PDF presentation
+  reflow/fixed/PDF/audio presentation, persistence, accessibility, overlays,
+  links, and search
 - [`BRIDGE_EXTENSIONS.md`](BRIDGE_EXTENSIONS.md) — trusted host plug-ins,
   app-to-JavaScript commands, JavaScript-to-app messages, and lifecycle hooks
 - [`ARCHITECTURE.md`](ARCHITECTURE.md) — ownership boundaries from source loading
@@ -25,6 +26,6 @@ rendering ebook publications on Apple platforms.
 ## Start here
 
 For a first integration, read the root [`README`](../README.md), then use
-[`API.md`](API.md). Read [`BRIDGE_EXTENSIONS.md`](BRIDGE_EXTENSIONS.md) only if
-the app needs DOM-level behavior such as text-to-speech focus, custom selection
-handling, reading analytics, or another host-owned feature.
+[`API.md`](API.md). Use the fixed-page overlay API for page-coordinate features
+and [`BRIDGE_EXTENSIONS.md`](BRIDGE_EXTENSIONS.md) for DOM-level behavior such as
+text-to-speech focus, custom selection handling, or reading analytics.

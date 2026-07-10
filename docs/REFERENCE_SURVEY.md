@@ -1,4 +1,4 @@
-# Ebook Library Reference Survey (2026-02-22)
+# Ebook Library Reference Survey (updated 2026-07-10)
 
 > This is a dated discovery snapshot. Repository popularity figures may change;
 > the checked-in submodule revisions and license files are the implementation
@@ -25,12 +25,22 @@ This survey focuses on:
 | `mozilla/pdf.js` | JavaScript | Widely used PDF parser + renderer | 52,863 GitHub stars | Apache-2.0 | Primary PDF rendering behavior reference |
 | `J-F-Liu/lopdf` | Rust | PDF document parsing/manipulation | 2,057 GitHub stars | MIT | PDF parsing/data-model reference from Rust ecosystem |
 
+## Standards and clean-room format references
+
+| Reference | Use |
+|---|---|
+| [W3C Audiobooks](https://www.w3.org/TR/audiobooks/) | Manifest reading order, metadata, resources, TOC, duration, and packaged/offline behavior |
+| [Official DjVu format documentation](https://djvu.sourceforge.net/doc/man/djvu.html) | Published container, image-layer, text, outline, and annotation behavior for the clean-room decoder |
+
+Standards describe file behavior; they are not linked runtime dependencies.
+
 ## Evaluated But Excluded
 
 | Repo | Reason excluded |
 |---|---|
 | `danigm/epub-rs` | GPL-3.0 license; conflicts with permissive-only dependency policy for this project |
 | `kovidgoyal/calibre` | GPL-3.0 license; strong copyleft not suitable as a code reference dependency for MIT-distributed implementation reuse |
+| [`DjVuLibre`](https://djvu.sourceforge.net/licensing.html) | GPL-2.0 licensing is incompatible with embedding or mechanically porting its decoder into this MIT package. BookKit uses its command-line tools only as an external black-box compatibility oracle during development, never as a library/runtime dependency. |
 
 ## License Decision Rule Used
 
@@ -48,3 +58,6 @@ Rejected in `refs/`:
 
 - This repository keeps these projects as `git submodule`s for architecture study and non-copy reference.
 - If code is ever ported or adapted, preserve each upstream license notice and attribution requirements.
+- The BookKit DjVu implementation is clean room: it follows published format
+  behavior and independent fixtures and does not inspect/copy DjVuLibre decoder
+  source.

@@ -40,6 +40,16 @@ private extension ReadingMode {
     }
 }
 
+private struct ExampleLinkPolicy: LinkPolicy {
+    func action(for url: URL, context _: LinkContext) async -> LinkAction {
+        switch url.scheme?.lowercased() {
+        case "http", "https": return .openExternally
+        case "bookkit", nil: return .follow
+        default: return .block
+        }
+    }
+}
+
 struct ExampleRootView: View {
     @StateObject private var model = ExampleViewModel()
     @State private var controlsOffset: CGSize = .zero
@@ -151,6 +161,12 @@ struct ExampleRootView: View {
             }
             .exampleControlButtonStyle()
 
+            if model.isFixedPublication {
+                Toggle("Spread", isOn: $model.showsSpread)
+                    .font(.caption)
+                    .toggleStyle(.switch)
+            }
+
             Button {
                 model.goBack()
             } label: {
@@ -242,7 +258,7 @@ struct ExampleRootView: View {
             VStack(spacing: 10) {
                 Text("BookKit Example")
                     .font(.title2.weight(.semibold))
-                Text("Open an EPUB, FB2, MOBI, AZW3/KF8, or PDF file.")
+                Text("Open an EPUB, FB2, MOBI, AZW3/KF8, PDF, CBZ, DjVu, text, HTML, Markdown, or audiobook file.")
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -382,10 +398,17 @@ struct ExampleRootView: View {
 
     @ViewBuilder
     private func readerPanel(book: Book) -> some View {
-        if book.format == .pdf {
+        if book.presentation.layout == .audiobook {
+            AudiobookExampleView(model: model, book: book)
+        } else if book.format == .pdf {
             if let data = book.assets.first(where: { $0.id == "pdf-document" })?.data {
                 #if canImport(PDFKit) && !os(tvOS)
-                PDFBookView(data: data, pageIndex: model.selectedChapterIndex)
+                PDFBookView(
+                    data: data,
+                    pageIndex: model.selectedChapterIndex,
+                    onPageChanged: model.updatePDFPage,
+                    onLinkActivated: model.activatePDFLink
+                )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 #else
                 Text(model.currentPDFPageText)
@@ -395,6 +418,21 @@ struct ExampleRootView: View {
                 Text(model.currentPDFPageText)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+        } else if model.isBitmapFixedPublication {
+            FixedPageBookView(
+                book: book,
+                pageIndex: model.selectedChapterIndex,
+                showsSpread: model.showsSpread,
+                onLinkActivated: model.activateFixedPageLink,
+                onVisibilityChanged: model.updateFixedPageVisibility
+            ) { context in
+                FixedPageExampleOverlay(context: context)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 24)
+                    .onEnded { value in model.handleSwipe(value) }
+            )
         } else if let bridge = model.bridge {
             GeometryReader { geometry in
                 BookView(bridge: bridge)
@@ -433,6 +471,134 @@ struct ExampleRootView: View {
         #else
         return Image(uiImage: image)
         #endif
+    }
+}
+
+private struct AudiobookExampleView: View {
+    @ObservedObject var model: ExampleViewModel
+    let book: Book
+
+    var body: some View {
+        VStack(spacing: 22) {
+            if let image = model.posterImage {
+                platformImageView(image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxWidth: 300, maxHeight: 300)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+
+            VStack(spacing: 6) {
+                Text(book.metadata.title)
+                    .font(.title2.weight(.semibold))
+                Text(model.currentAudioTrackTitle)
+                    .foregroundStyle(.secondary)
+                Text("\(formatTime(model.audioElapsed)) / \(formatTime(model.audioDuration))")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+
+            Slider(
+                value: $model.audioElapsed,
+                in: 0...max(model.audioDuration, 1),
+                onEditingChanged: model.audioScrubbingChanged
+            )
+            .frame(maxWidth: 560)
+            .accessibilityLabel("Playback position")
+
+            HStack(spacing: 18) {
+                Button { model.previousAudioTrack() } label: {
+                    Image(systemName: "backward.end.fill")
+                }
+                Button { model.skipAudio(by: -15) } label: {
+                    Image(systemName: "gobackward.15")
+                }
+                Button { model.toggleAudioPlayback() } label: {
+                    Image(
+                        systemName: model.audioStatus == .playing
+                            ? "pause.circle.fill"
+                            : "play.circle.fill"
+                    )
+                    .font(.system(size: 50))
+                }
+                Button { model.skipAudio(by: 15) } label: {
+                    Image(systemName: "goforward.15")
+                }
+                Button { model.nextAudioTrack() } label: {
+                    Image(systemName: "forward.end.fill")
+                }
+            }
+            .buttonStyle(.plain)
+            .font(.title2)
+
+            Picker(
+                "Speed",
+                selection: Binding(
+                    get: { Double(model.audioRate) },
+                    set: model.setAudioRate
+                )
+            ) {
+                ForEach([0.75, 1, 1.25, 1.5, 2], id: \.self) { rate in
+                    Text("\(rate, specifier: "%g")×").tag(rate)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 420)
+
+            ProgressView(value: model.audioTotalProgression)
+                .frame(maxWidth: 560)
+                .accessibilityLabel("Book progress")
+        }
+        .padding(30)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func formatTime(_ seconds: Double) -> String {
+        let value = max(Int(seconds.rounded(.down)), 0)
+        let hours = value / 3600
+        let minutes = value % 3600 / 60
+        let remainder = value % 60
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, remainder)
+        }
+        return String(format: "%d:%02d", minutes, remainder)
+    }
+
+    private func platformImageView(_ image: PlatformImage) -> Image {
+        #if os(macOS)
+        return Image(nsImage: image)
+        #else
+        return Image(uiImage: image)
+        #endif
+    }
+}
+
+private struct FixedPageExampleOverlay: View {
+    let context: FixedPageOverlayContext
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(context.presentation.links) { link in
+                let frame = context.frame(for: link.bounds)
+                Rectangle()
+                    .stroke(Color.accentColor.opacity(0.65), lineWidth: 1)
+                    .frame(width: frame.width, height: frame.height)
+                    .position(x: frame.midX, y: frame.midY)
+            }
+
+            Text("Page \(context.pageIndex + 1)")
+                .font(.caption2.monospacedDigit())
+                .padding(.horizontal, 7)
+                .padding(.vertical, 4)
+                .background(.thinMaterial, in: Capsule())
+                .position(
+                    x: context.imageFrame.midX,
+                    y: context.imageFrame.minY + 18
+                )
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }
 
@@ -509,6 +675,7 @@ final class ExampleViewModel: ObservableObject {
     @Published var bookmarks: [ReadingBookmark] = []
     @Published var selectedChapterIndex: Int = 0
     @Published var bookmarkNoteDraft = ""
+    @Published var showsSpread = false
     @Published var readingMode: ReadingMode = .scroll
     @Published var effectiveReadingMode: ReadingMode = .scroll
     @Published var isVoiceOverEnabled = false
@@ -520,14 +687,32 @@ final class ExampleViewModel: ObservableObject {
     @Published var latestSelection: ReaderSelection?
     @Published var pluginStatus = "Idle"
     @Published var eventLog: [String] = []
+    @Published var audioStatus: AudiobookPlaybackStatus = .idle
+    @Published var audioElapsed: Double = 0
+    @Published var audioDuration: Double = 0
+    @Published var audioRate: Float = 1
+    @Published var audioTotalProgression: Double = 0
 
     @Published private var viewport = Viewport(width: 740, height: 900)
 
     var canNavigate: Bool { renderer != nil }
     var canUsePlugin: Bool { bridge != nil && renderer != nil }
+    var isFixedPublication: Bool { isBitmapFixedPublication }
+    var isBitmapFixedPublication: Bool {
+        book.map(Self.isBitmapFixedPublication) ?? false
+    }
+    var currentAudioTrackTitle: String {
+        guard let book, book.readingOrder.indices.contains(position.spineIndex) else {
+            return "No track"
+        }
+        return book.readingOrder[position.spineIndex].title ?? "Track \(position.spineIndex + 1)"
+    }
 
     private var eventTask: Task<Void, Never>?
     private var viewportTask: Task<Void, Never>?
+    private var audioEventTask: Task<Void, Never>?
+    private var audiobookPlayer: AudiobookPlayer?
+    private var isScrubbingAudio = false
     private var didAttemptDemoOpen = false
     private var isAutomatedDemoLaunch = false
 
@@ -547,7 +732,11 @@ final class ExampleViewModel: ObservableObject {
 
     static var supportedTypes: [UTType] {
         var types: [UTType] = []
-        for ext in ["epub", "fb2", "mobi", "azw3", "kf8", "pdf"] {
+        for ext in [
+            "epub", "fb2", "zip", "mobi", "azw3", "kf8", "pdf", "cbz",
+            "djvu", "djv", "txt", "html", "htm", "md", "markdown", "lpf",
+            "audiobook", "mp3", "m4a", "m4b", "aac",
+        ] {
             if let type = UTType(filenameExtension: ext) {
                 types.append(type)
             }
@@ -573,18 +762,32 @@ final class ExampleViewModel: ObservableObject {
 
         eventTask?.cancel()
         viewportTask?.cancel()
+        audioEventTask?.cancel()
+        if let existingPlayer = audiobookPlayer {
+            await existingPlayer.shutdown()
+        }
+        audiobookPlayer = nil
+        audioStatus = .idle
+        audioElapsed = 0
+        audioDuration = 0
+        audioTotalProgression = 0
 
         do {
             let loadedBook = try await Book.open(from: url, options: openOptions)
-            let bridge = loadedBook.format == .pdf ? nil : WebViewReflowBridge(
-                configuration: WebViewReflowConfiguration(
-                    plugins: [Self.examplePlugin]
+            let isAudiobook = loadedBook.presentation.layout == .audiobook
+            let bridge = Self.requiresReflowBridge(loadedBook)
+                ? WebViewReflowBridge(
+                    configuration: WebViewReflowConfiguration(
+                        plugins: [Self.examplePlugin]
+                    )
                 )
-            )
+                : nil
+            let rendererStateStore: (any ReaderStateStore)? = isAudiobook ? nil : stateStore
             let renderer = try ContentRenderer(
                 book: loadedBook,
                 options: openOptions,
-                stateStore: stateStore,
+                stateStore: rendererStateStore,
+                linkPolicy: ExampleLinkPolicy(),
                 reflowBridge: bridge
             )
 
@@ -594,12 +797,8 @@ final class ExampleViewModel: ObservableObject {
             startEventSubscription(renderer: renderer)
             self.posterImage = await loadPosterImage(for: loadedBook)
 
-            try await renderer.restoreState()
             let restoredPreferences = await renderer.preferences()
             readingMode = restoredPreferences.readingMode
-            let restoredPosition = await renderer.currentPosition()
-            selectedChapterIndex = clampChapterIndex(restoredPosition.spineIndex, book: loadedBook)
-
             try await renderer.setAccessibility(
                 ReaderAccessibilitySettings(
                     isVoiceOverEnabled: isVoiceOverEnabled,
@@ -609,7 +808,29 @@ final class ExampleViewModel: ObservableObject {
                 )
             )
 
-            if !loadedBook.readingOrder.isEmpty {
+            if isAudiobook {
+                let player = try AudiobookPlayer(
+                    book: loadedBook,
+                    options: openOptions,
+                    stateStore: stateStore
+                )
+                audiobookPlayer = player
+                startAudioEventSubscription(player: player)
+                try await player.prepare()
+                player.activateRemoteCommands()
+                let restoredPosition = player.currentPosition()
+                try await renderer.go(to: restoredPosition)
+                applyAudioSnapshot(player.currentSnapshot())
+            } else {
+                try await renderer.restoreState()
+                let restoredPosition = await renderer.currentPosition()
+                selectedChapterIndex = clampChapterIndex(
+                    restoredPosition.spineIndex,
+                    book: loadedBook
+                )
+                guard !loadedBook.readingOrder.isEmpty else {
+                    throw BookError.malformedDocument("Book has no readable sections")
+                }
                 try await renderer.renderChapter(
                     at: selectedChapterIndex,
                     viewport: viewport,
@@ -633,6 +854,11 @@ final class ExampleViewModel: ObservableObject {
         } catch {
             errorMessage = "Open failed: \(error.localizedDescription)"
             eventTask?.cancel()
+            audioEventTask?.cancel()
+            if let player = audiobookPlayer {
+                await player.shutdown()
+                audiobookPlayer = nil
+            }
             if isAutomatedDemoLaunch {
                 print("BOOKKIT_EXAMPLE_FAILED \(error.localizedDescription)")
             }
@@ -650,7 +876,7 @@ final class ExampleViewModel: ObservableObject {
         }
 
         viewport = next
-        guard let renderer, let book, book.format != .pdf, !book.readingOrder.isEmpty else {
+        guard let renderer, bridge != nil, let book, !book.readingOrder.isEmpty else {
             return
         }
 
@@ -682,6 +908,26 @@ final class ExampleViewModel: ObservableObject {
         }
         let target = clampChapterIndex(index, book: book)
 
+        if let audiobookPlayer {
+            Task {
+                do {
+                    let begin = book.readingOrder[target].audio?.clipBegin ?? 0
+                    let destination = Position(
+                        spineIndex: target,
+                        progression: 0,
+                        timestamp: begin
+                    )
+                    try await audiobookPlayer.seek(to: destination)
+                    try await renderer.go(to: destination)
+                    applyAudioSnapshot(audiobookPlayer.currentSnapshot())
+                    await refreshState()
+                } catch {
+                    errorMessage = "Track change failed: \(error.localizedDescription)"
+                }
+            }
+            return
+        }
+
         Task {
             do {
                 let preferences = await renderer.preferences()
@@ -700,6 +946,10 @@ final class ExampleViewModel: ObservableObject {
     }
 
     func nextPage() {
+        if audiobookPlayer != nil {
+            nextAudioTrack()
+            return
+        }
         guard let renderer else { return }
         Task {
             do {
@@ -712,6 +962,10 @@ final class ExampleViewModel: ObservableObject {
     }
 
     func previousPage() {
+        if audiobookPlayer != nil {
+            previousAudioTrack()
+            return
+        }
         guard let renderer else { return }
         Task {
             do {
@@ -727,7 +981,11 @@ final class ExampleViewModel: ObservableObject {
         guard let renderer, renderer.canGoBack() else { return }
         Task {
             do {
-                _ = try await renderer.goBack()
+                let locator = try await renderer.goBack()
+                if let locator, let audiobookPlayer {
+                    try await audiobookPlayer.seek(to: locator.position)
+                    applyAudioSnapshot(audiobookPlayer.currentSnapshot())
+                }
                 await refreshState()
             } catch {
                 errorMessage = "Back failed: \(error.localizedDescription)"
@@ -739,7 +997,11 @@ final class ExampleViewModel: ObservableObject {
         guard let renderer, renderer.canGoForward() else { return }
         Task {
             do {
-                _ = try await renderer.goForward()
+                let locator = try await renderer.goForward()
+                if let locator, let audiobookPlayer {
+                    try await audiobookPlayer.seek(to: locator.position)
+                    applyAudioSnapshot(audiobookPlayer.currentSnapshot())
+                }
                 await refreshState()
             } catch {
                 errorMessage = "Forward failed: \(error.localizedDescription)"
@@ -805,15 +1067,157 @@ final class ExampleViewModel: ObservableObject {
     }
 
     func openNavigationItem(_ item: TOCNode) {
-        guard let renderer else { return }
+        guard let renderer, let book else { return }
         Task {
             do {
-                try await renderer.go(to: item)
+                if let audiobookPlayer,
+                   let destination = book.locator(forNavigationHref: item.href)
+                {
+                    try await audiobookPlayer.seek(to: destination.position)
+                    try await renderer.go(to: destination)
+                    applyAudioSnapshot(audiobookPlayer.currentSnapshot())
+                } else {
+                    try await renderer.go(to: item)
+                }
                 await refreshState()
             } catch {
                 errorMessage = "Navigation failed: \(error.localizedDescription)"
             }
         }
+    }
+
+    func updateFixedPageVisibility(_ visibility: FixedPageVisibility) {
+        locator = visibility.locator
+        position = visibility.locator.position
+        selectedChapterIndex = visibility.primaryPageIndex
+    }
+
+    func activateFixedPageLink(_ activation: FixedPageLinkActivation) {
+        guard let renderer else { return }
+        Task {
+            do {
+                _ = try await renderer.handlePageLink(
+                    activation.link,
+                    onPageAt: activation.pageIndex
+                )
+                await refreshState()
+            } catch {
+                errorMessage = "Link failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func updatePDFPage(_ index: Int) {
+        guard let renderer, index != selectedChapterIndex else { return }
+        Task {
+            do {
+                try await renderer.go(to: Position(spineIndex: index, progression: 0))
+                await refreshState()
+            } catch {
+                errorMessage = "PDF navigation failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func activatePDFLink(_ url: URL) {
+        guard let renderer, let book else { return }
+        let href = book.readingOrder.indices.contains(selectedChapterIndex)
+            ? book.readingOrder[selectedChapterIndex].href
+            : "pdf://page/1"
+        Task {
+            do {
+                _ = try await renderer.handleLink(
+                    url,
+                    context: LinkContext(currentChapterHref: href)
+                )
+            } catch {
+                errorMessage = "PDF link failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func toggleAudioPlayback() {
+        guard let audiobookPlayer else { return }
+        Task {
+            do {
+                if audioStatus == .playing {
+                    try await audiobookPlayer.pause()
+                } else {
+                    try await audiobookPlayer.play()
+                }
+                applyAudioSnapshot(audiobookPlayer.currentSnapshot())
+            } catch {
+                errorMessage = "Playback failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func nextAudioTrack() {
+        guard let audiobookPlayer, let renderer else { return }
+        Task {
+            do {
+                _ = try await audiobookPlayer.nextTrack()
+                let snapshot = audiobookPlayer.currentSnapshot()
+                try await renderer.go(to: snapshot.position)
+                applyAudioSnapshot(snapshot)
+                await refreshState()
+            } catch {
+                errorMessage = "Next track failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func previousAudioTrack() {
+        guard let audiobookPlayer, let renderer else { return }
+        Task {
+            do {
+                _ = try await audiobookPlayer.previousTrack()
+                let snapshot = audiobookPlayer.currentSnapshot()
+                try await renderer.go(to: snapshot.position)
+                applyAudioSnapshot(snapshot)
+                await refreshState()
+            } catch {
+                errorMessage = "Previous track failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func skipAudio(by seconds: Double) {
+        guard let audiobookPlayer else { return }
+        Task {
+            do {
+                let position = audiobookPlayer.currentPosition()
+                try await audiobookPlayer.seek(
+                    toTimestamp: (position.timestamp ?? 0) + seconds
+                )
+                applyAudioSnapshot(audiobookPlayer.currentSnapshot())
+            } catch {
+                errorMessage = "Seek failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func audioScrubbingChanged(_ isEditing: Bool) {
+        isScrubbingAudio = isEditing
+        guard !isEditing, let audiobookPlayer, let book else { return }
+        let index = audiobookPlayer.currentPosition().spineIndex
+        let begin = book.readingOrder.indices.contains(index)
+            ? book.readingOrder[index].audio?.clipBegin ?? 0
+            : 0
+        Task {
+            do {
+                try await audiobookPlayer.seek(toTimestamp: begin + audioElapsed)
+                applyAudioSnapshot(audiobookPlayer.currentSnapshot())
+            } catch {
+                errorMessage = "Seek failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func setAudioRate(_ rate: Double) {
+        guard let audiobookPlayer else { return }
+        audiobookPlayer.setRate(Float(rate))
+        applyAudioSnapshot(audiobookPlayer.currentSnapshot())
     }
 
     func pingExamplePlugin() {
@@ -866,7 +1270,13 @@ final class ExampleViewModel: ObservableObject {
         let note = bookmarkNoteDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         Task {
             do {
-                _ = try await renderer.addBookmark(note: note.isEmpty ? nil : note)
+                if let audiobookPlayer {
+                    _ = try await audiobookPlayer.addBookmark(
+                        note: note.isEmpty ? nil : note
+                    )
+                } else {
+                    _ = try await renderer.addBookmark(note: note.isEmpty ? nil : note)
+                }
                 bookmarkNoteDraft = ""
                 await refreshState()
             } catch {
@@ -879,7 +1289,11 @@ final class ExampleViewModel: ObservableObject {
         guard let renderer else { return }
         Task {
             do {
-                try await renderer.removeBookmark(id: id)
+                if let audiobookPlayer {
+                    try await audiobookPlayer.removeBookmark(id: id)
+                } else {
+                    try await renderer.removeBookmark(id: id)
+                }
                 await refreshState()
             } catch {
                 errorMessage = "Delete bookmark failed: \(error.localizedDescription)"
@@ -892,6 +1306,13 @@ final class ExampleViewModel: ObservableObject {
 
         Task {
             do {
+                if let audiobookPlayer {
+                    try await audiobookPlayer.seek(to: bookmark.position)
+                    try await renderer.go(to: bookmark.position)
+                    applyAudioSnapshot(audiobookPlayer.currentSnapshot())
+                    await refreshState()
+                    return
+                }
                 let targetIndex = bookmark.position.spineIndex
                 if targetIndex != selectedChapterIndex {
                     let preferences = await renderer.preferences()
@@ -911,7 +1332,7 @@ final class ExampleViewModel: ObservableObject {
     }
 
     func handleSwipe(_ value: DragGesture.Value) {
-        guard effectiveReadingMode == .paginated else {
+        guard isFixedPublication || effectiveReadingMode == .paginated else {
             return
         }
 
@@ -939,9 +1360,14 @@ final class ExampleViewModel: ObservableObject {
             return
         }
 
-        position = await renderer.currentPosition()
-        locator = await renderer.currentLocator()
-        bookmarks = await renderer.bookmarks()
+        if let audiobookPlayer {
+            applyAudioSnapshot(audiobookPlayer.currentSnapshot())
+            bookmarks = await audiobookPlayer.bookmarks()
+        } else {
+            position = await renderer.currentPosition()
+            locator = await renderer.currentLocator()
+            bookmarks = await renderer.bookmarks()
+        }
         canGoBack = renderer.canGoBack()
         canGoForward = renderer.canGoForward()
         readingMode = (await renderer.preferences()).readingMode
@@ -1002,6 +1428,22 @@ final class ExampleViewModel: ObservableObject {
         return base.appendingPathComponent("BookKitExample/ReaderState", isDirectory: true)
     }
 
+    private static func requiresReflowBridge(_ book: Book) -> Bool {
+        guard book.format != .pdf, book.presentation.layout != .audiobook else {
+            return false
+        }
+        return !isBitmapFixedPublication(book)
+    }
+
+    private static func isBitmapFixedPublication(_ book: Book) -> Bool {
+        book.presentation.layout == .fixed &&
+            !book.readingOrder.isEmpty &&
+            book.readingOrder.allSatisfy { chapter in
+                chapter.resourceID != nil &&
+                    chapter.mediaType?.lowercased().hasPrefix("image/") == true
+            }
+    }
+
     private func startEventSubscription(renderer: ContentRenderer) {
         eventTask?.cancel()
         let events = renderer.events
@@ -1009,6 +1451,57 @@ final class ExampleViewModel: ObservableObject {
             for await event in events {
                 self?.handle(event)
             }
+        }
+    }
+
+    private func startAudioEventSubscription(player: AudiobookPlayer) {
+        audioEventTask?.cancel()
+        let events = player.events
+        audioEventTask = Task { @MainActor [weak self] in
+            for await event in events {
+                self?.handleAudioEvent(event)
+            }
+        }
+    }
+
+    private func handleAudioEvent(_ event: AudiobookPlaybackEvent) {
+        switch event {
+        case let .ready(snapshot),
+             let .stateChanged(snapshot),
+             let .positionChanged(snapshot):
+            applyAudioSnapshot(snapshot)
+        case let .trackChanged(index, title):
+            selectedChapterIndex = index
+            appendEvent("Audio track: \(title ?? String(index + 1))")
+        case .ended:
+            appendEvent("Audiobook ended")
+        case let .error(error):
+            errorMessage = error.localizedDescription
+            appendEvent("Audio playback error")
+        }
+    }
+
+    private func applyAudioSnapshot(_ snapshot: AudiobookPlaybackSnapshot) {
+        audioStatus = snapshot.status
+        audioRate = snapshot.rate
+        audioDuration = max(snapshot.trackDuration ?? 0, 0)
+        audioTotalProgression = snapshot.totalProgression
+        position = snapshot.position
+        if !isScrubbingAudio {
+            let begin: Double
+            if let book, book.readingOrder.indices.contains(snapshot.position.spineIndex) {
+                begin = book.readingOrder[snapshot.position.spineIndex].audio?.clipBegin ?? 0
+            } else {
+                begin = 0
+            }
+            audioElapsed = min(
+                max((snapshot.position.timestamp ?? begin) - begin, 0),
+                max(audioDuration, 0)
+            )
+        }
+        if let book {
+            locator = book.locator(for: snapshot.position)
+            selectedChapterIndex = clampChapterIndex(snapshot.position.spineIndex, book: book)
         }
     }
 
@@ -1042,6 +1535,9 @@ final class ExampleViewModel: ObservableObject {
             appendEvent("Accessibility settings applied")
         case let .linkActivated(url, kind, action):
             appendEvent("Link \(kind.rawValue): \(action) • \(url.absoluteString)")
+            if action == .openExternally {
+                Self.openExternally(url)
+            }
         case let .decorationTapped(value):
             appendEvent("Decoration tapped: \(value.group.rawValue)/\(value.id)")
         case let .bridgeMessage(name, payload):
@@ -1074,6 +1570,14 @@ final class ExampleViewModel: ObservableObject {
         }
     }
 
+    private static func openExternally(_ url: URL) {
+        #if os(macOS)
+        NSWorkspace.shared.open(url)
+        #elseif canImport(UIKit)
+        UIApplication.shared.open(url)
+        #endif
+    }
+
     private static let examplePlugin = ReflowScriptPlugin(
         identifier: "bookkit.example.integration",
         source: """
@@ -1090,6 +1594,7 @@ final class ExampleViewModel: ObservableObject {
     deinit {
         eventTask?.cancel()
         viewportTask?.cancel()
+        audioEventTask?.cancel()
     }
 }
 

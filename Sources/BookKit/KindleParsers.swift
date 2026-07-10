@@ -26,7 +26,12 @@ private enum KindlePublication {
         let container = try PalmContainer(data: data)
         let header = try KindleHeader(record: container.records[0])
         guard header.encryption == 0 else {
-            throw BookError.unsupportedFormat
+            throw BookError.protectedContent(
+                ContentProtection(
+                    kind: .kindleDRM,
+                    scheme: "PalmDOC encryption \(header.encryption)"
+                )
+            )
         }
 
         let exth = EXTHMetadata.parse(record: container.records[0], header: header)

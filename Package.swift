@@ -26,7 +26,10 @@ let package = Package(
         ),
         .testTarget(
             name: "BookKitTests",
-            dependencies: ["BookKit"],
+            dependencies: [
+                "BookKit",
+                .product(name: "ZIPFoundation", package: "ZIPFoundation"),
+            ],
             path: "tests/BookKitTests"
         ),
         .executableTarget(

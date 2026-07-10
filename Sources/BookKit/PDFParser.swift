@@ -16,6 +16,11 @@ public struct PDFParser: BookParser {
         guard let document = PDFDocument(data: data) else {
             throw BookError.invalidContainer("Unable to open PDF document")
         }
+        guard !document.isEncrypted else {
+            throw BookError.protectedContent(
+                ContentProtection(kind: .pdfEncryption, scheme: "PDF standard security handler")
+            )
+        }
 
         var chapters: [Chapter] = []
         for pageIndex in 0..<document.pageCount {
@@ -64,12 +69,21 @@ public struct PDFParser: BookParser {
             landmarks: [],
             pageList: pageList,
             rawExtensions: [:],
-            diagnostics: []
+            diagnostics: [],
+            presentation: BookPresentation(layout: .fixed, spread: .none)
         )
         #else
         // Fallback for toolchains without PDFKit.
         guard data.starts(with: Data("%PDF-".utf8)) else {
             throw BookError.invalidContainer("Not a PDF file")
+        }
+        guard !PDFProtectionProbe.containsEncryptionDictionary(data) else {
+            throw BookError.protectedContent(
+                ContentProtection(
+                    kind: .pdfEncryption,
+                    scheme: "PDF encryption dictionary"
+                )
+            )
         }
 
         let text = data.bestEffortString().normalizedWhitespace()
@@ -85,7 +99,8 @@ public struct PDFParser: BookParser {
             landmarks: [],
             pageList: [],
             rawExtensions: [:],
-            diagnostics: [BookDiagnostic(severity: .warning, code: "pdf.fallback-parser", message: "PDFKit unavailable; using fallback parser")]
+            diagnostics: [BookDiagnostic(severity: .warning, code: "pdf.fallback-parser", message: "PDFKit unavailable; using fallback parser")],
+            presentation: BookPresentation(layout: .fixed, spread: .none)
         )
         #endif
     }
@@ -115,6 +130,35 @@ public struct PDFParser: BookParser {
         }
     }
     #endif
+}
+
+enum PDFProtectionProbe {
+    static func containsEncryptionDictionary(_ data: Data) -> Bool {
+        let marker = Data("/Encrypt".utf8)
+        var searchStart = data.startIndex
+        while searchStart <= data.endIndex - marker.count,
+              let range = data.range(
+                  of: marker,
+                  options: [],
+                  in: searchStart..<data.endIndex
+              )
+        {
+            let next = range.upperBound
+            if next == data.endIndex || isPDFDelimiter(data[next]) {
+                return true
+            }
+            searchStart = range.upperBound
+        }
+        return false
+    }
+
+    private static func isPDFDelimiter(_ byte: UInt8) -> Bool {
+        byte == 0 || byte == 9 || byte == 10 || byte == 12 || byte == 13 ||
+            byte == 32 || [UInt8(ascii: "("), UInt8(ascii: ")"), UInt8(ascii: "<"),
+                           UInt8(ascii: ">"), UInt8(ascii: "["), UInt8(ascii: "]"),
+                           UInt8(ascii: "{"), UInt8(ascii: "}"), UInt8(ascii: "/"),
+                           UInt8(ascii: "%")].contains(byte)
+    }
 }
 
 private extension String {

@@ -1,8 +1,8 @@
 # BookKit architecture
 
-BookKit exposes one Swift package product and keeps format-specific parsing behind
-a normalized publication model. The host chooses presentation, persistence, link
-policy, and optional DOM extensions.
+BookKit keeps format-specific parsing behind a normalized publication model. The
+host owns application chrome, state presentation, external URL opening, and
+optional product features such as narration or annotations.
 
 ## Data flow
 
@@ -10,185 +10,238 @@ policy, and optional DOM extensions.
 BookSource + OpenOptions
         |
         v
-FormatSniffer -> ParserRegistry -> EPUB / FB2 / MOBI / AZW3 / PDF parser
-        |                              |
-        +------------------------------+
-                       |
-                       v
-        Book + Chapter + Asset + TOCNode
-                       |
-                       v
-             Normalize / sanitize / style
-                       |
-             +---------+---------+
-             |                   |
-             v                   v
-      ContentRenderer      SearchIndex / ResourceLoader
-             |
-       +-----+-----+
-       |           |
-       v           v
- ReflowLayout   PDFPageAdapter
-       |           |
-       v           v
-WebViewReflow  PDFBookView / host view
-       |
-       v
-    BookView
+FormatSniffer -> ParserRegistry
+        |
+        +-- EPUB / FB2 / MOBI / AZW3 / document adapters
+        +-- PDF
+        +-- CBZ / fixed-image EPUB / DjVu
+        +-- audiobook manifests/packages/files
+        |
+        v
+Book + Metadata + Chapter + Asset + TOCNode + Presentation
+        |
+        +-- reflow/XHTML fixed -> ContentRenderer -> ReflowLayout -> WebViewReflow -> BookView
+        +-- PDF                -> ContentRenderer -> PDFPageAdapter + PDFBookView
+        +-- bitmap fixed       -> ContentRenderer -> FixedPageAdapter + FixedPageBookView
+        +-- audiobook          -> AudiobookTimeline + AudiobookPlayer -> playback engine
 ```
 
-## Source and parsing layer
+`ContentRenderer` remains the shared visual navigator and link-policy/history
+coordinator. `AudiobookPlayer` is separate because playback state is time based
+and owns AVFoundation/Now Playing behavior.
 
-`BookSource` supports a URL, existing `Data`, or a deferred data provider.
-`OpenOptions` owns file access, network policy, and size limits.
+## Source and parser layer
 
-`Book.open` performs these steps:
+`BookSource` supports a URL, existing `Data`, or deferred provider. `OpenOptions`
+owns file access, network policy, temporary storage, and resource/archive limits.
 
-1. read the source through the configured `FileAccessPolicy`;
-2. enforce `maxSourceBytes`;
-3. detect the format from extension and signature;
-4. select a parser from `ParserRegistry`;
-5. parse into the common `Book` model;
-6. map parser failures into `BookError`.
+`Book.open`:
 
-`ParserRegistry.default` contains EPUB, FB2, MOBI, AZW3, and PDF parsers. A host
-can construct another registry to replace a parser or add a format already
-represented by `BookFormat`.
+1. reads through `FileAccessPolicy`;
+2. enforces `maxSourceBytes`;
+3. detects extension/signature;
+4. selects `BookParser` from `ParserRegistry`;
+5. validates container/protection rules;
+6. produces the common model;
+7. maps failures into `BookError`.
 
-The current pipeline materializes the complete source as `Data`. EPUB also tracks
-the total uncompressed archive size before extracting entries. Truly incremental
-archive parsing remains future work.
+`ParserRegistry.default` contains EPUB, FB2, MOBI, AZW3, PDF, CBZ, document,
+audiobook, and DjVu parsers.
+
+The current pipeline materializes the full source. `SafeZIPArchive` centralizes
+encrypted-entry, traversal, entry-count, per-entry, and total-expansion checks for
+CBZ, FB2 ZIP, and packaged audiobooks. EPUB performs equivalent package-specific
+checks before entry reads.
+
+## Protection gate
+
+Protection checks are parser inputs, not renderer options:
+
+```text
+source
+  -> encrypted-container/header/manifest inspection
+  -> reject with BookError.protectedContent
+  -> only DRM-free content reaches normal decode/render/playback
+```
+
+PDFKit, AVFoundation, WebKit, and ImageIO are never used as decryption services.
+Audio receives a second AVFoundation protection check immediately before
+playback. EPUB's standard IDPF font obfuscation is reversed as a publication
+resource transform; other EPUB encryption is rejected.
 
 ## Normalized publication model
 
 Every parser produces:
 
-- `Metadata` for title, authors, language, identifiers, publisher, and date;
-- ordered `Chapter` values with normalized HTML-like content;
-- `Asset` values for styles, images, fonts, and retained source data;
-- hierarchical `TOCNode` arrays for TOC, landmarks, and page list;
-- stable publication ID and parser-specific `rawExtensions`;
-- non-fatal `BookDiagnostic` entries where available.
+- `Metadata`;
+- ordered `Chapter` values;
+- `Asset` resources;
+- hierarchical TOC, landmarks, and page list;
+- stable ID and format/version;
+- `BookPresentation` describing reflowable, fixed, or audiobook layout;
+- typed page/audio details where relevant;
+- raw namespaced metadata and recoverable diagnostics.
 
-The renderer does not reach back into format-specific parser state. Format
-differences must be represented in this model or kept as namespaced raw metadata.
-
-## Normalization and resources
-
-`Normalize` applies deterministic content sanitization and network policy before
-rendering. `ResolveStyles` combines host theme/typography with base CSS.
-
-For reflow rendering, `ContentRenderer` maps known local assets into data URLs and
-rewrites normalized chapter references. `ResourceLoader` is also public for hosts
-that need asset data by ID or `bookkit://asset/<id>` URL.
-
-The default policy removes or blocks active and implicit content, including:
-
-- scripts and inline event handlers;
-- embedded frames/objects and form submission;
-- meta refresh;
-- unsafe URL schemes;
-- remote CSS imports and resource URLs while network access is disabled.
-
-External anchor hrefs are retained so native `LinkPolicy` can make the decision.
+Fixed-page link coordinates are normalized to source pixels with a top-left
+origin. DjVu's bottom-left map-area coordinates are converted during parsing so
+the view layer stays format independent.
 
 ## Reader state ownership
 
-`Reader` is an actor responsible for position, preferences, bookmarks, and state
-persistence. It does not own a platform view.
+`Reader` is an actor responsible for position, preferences, bookmarks, and
+`ReaderStateStore` persistence. It owns no platform view.
 
-`ContentRenderer` is `@MainActor` and is the public navigation coordinator. It
-owns:
+`ContentRenderer` is `@MainActor` and owns:
 
-- the normalized `Book`;
-- one `Reader` actor;
-- either `ReflowLayout` or `PDFPageAdapter`;
-- jump-history stacks;
-- decorations and accessibility policy;
-- link routing and the public event hub.
+- a normalized `Book` and one `Reader`;
+- the active reflow, PDF, or fixed-page adapter;
+- jump history;
+- decorations/accessibility policy;
+- link routing and visual navigator events.
 
-This separation keeps mutable persistence state off the UI actor while ensuring
-that WebKit and view-facing state are never accessed from the wrong actor.
+This keeps persistence mutable state off the UI actor while framework-facing
+coordination stays on the correct actor.
 
-## Reflow rendering
+## Reflow and XHTML fixed layout
 
 `ReflowLayout` translates renderer operations into `ReflowBridge` commands and
-maps bridge events back to the active spine index.
+maps bridge events back to the current reading-order index.
 
-`WebViewReflowBridge` is the built-in implementation:
+`WebViewReflowBridge`:
 
 - owns a non-persistent `WKWebView`;
-- waits for its bootstrap document before accepting commands;
-- installs the BookKit runtime at document start;
-- disables publication-page JavaScript by default;
-- validates every message before exposing an event;
-- measures pagination from actual WebKit layout;
-- coalesces passive position reporting to one animation frame;
-- supports trusted host plug-ins in an isolated content world.
+- waits for bootstrap readiness;
+- disables page-world publication JavaScript;
+- installs BookKit and host plug-ins in an isolated client content world;
+- validates every inbound message;
+- applies theme, typography, layout, decoration, and accessibility state;
+- measures real layout and coalesces passive positions;
+- intercepts links before WebKit navigation.
 
-`BookView` only embeds that web view in SwiftUI. It deliberately does not own
-navigation bars, TOC UI, gestures, settings, or app state.
+Pre-paginated XHTML chapters use the same engine with a scaled fixed-page wrapper.
+Direct image spines use the bitmap path instead.
 
-## PDF rendering
+## Fixed-page engine
 
-`PDFParser` uses PDFKit to create one normalized section per page, outline-derived
-TOC nodes, page-list entries, and the retained original document asset
-`pdf-document`.
+`FixedPageAdapter` maps pages, positions, assets, covers, sides, and spreads. It
+uses the publication reading progression to return LTR or RTL visual order.
 
-`PDFPageAdapter` maps page indexes to `Position`. `ContentRenderer` uses the same
-navigator surface for PDF, while `PDFBookView` presents the document natively on
-iOS, macOS, and visionOS.
+`FixedPageBookView` aspect-fits one page/spread and layers:
 
-PDF does not use `ReflowBridge`, DOM decorations, or JavaScript plug-ins.
+1. decoded image;
+2. transparent accessible link buttons;
+3. an arbitrary host overlay.
+
+`FixedPageOverlayContext` converts page-source rectangles into fitted SwiftUI
+coordinates. This lets apps add voice-over focus, word/region highlighting,
+annotations, or live measurement UI without changing BookKit's renderer.
+
+`ImagePageStore` is an actor with a byte-bounded LRU-like thumbnail cache. It
+creates ImageIO thumbnails concurrently around a page but caps requested radius.
+
+## DjVu decoder
+
+The DjVu path is implemented inside BookKit:
+
+```text
+IFF FORM/DIRM/INCL
+  -> BZZ + ZP arithmetic streams
+  -> IW44 background/foreground
+  -> JB2 or striped/regular MMR mask
+  -> FGbz palette / JPEG layers
+  -> page raster + rotation
+  -> JPEG passthrough or PNG asset
+```
+
+NAVM becomes nested `TOCNode` values. TXTa/TXTz supplies searchable OCR text.
+ANTa/ANTz map areas become `PageLink` values, including relative page targets and
+rect/oval/text/poly/line bounds. Decoder dimensions, output bytes, records,
+component count, and inclusion depth are bounded by `OpenOptions` or fixed safety
+caps.
+
+The code does not depend on DjVuLibre.
+
+## PDF
+
+`PDFParser` rejects encrypted documents, then creates one normalized section per
+page, outline TOC nodes, page-list entries, and a retained `pdf-document` asset.
+
+`PDFPageAdapter` maps pages to positions. `PDFBookView` presents PDFKit, reports
+page-change notifications, preserves native internal page actions, and implements
+the URL-link delegate so PDFKit does not implicitly open external URLs. The host
+routes those URLs through its policy.
+
+## Audiobooks
+
+`AudiobookTimeline` maps track indexes, clip bounds, timestamps, local progress,
+and duration-weighted total progress.
+
+`AudiobookPlayer` owns:
+
+- its `Reader` persistence state;
+- `AudioResourceStore` materialization/network policy;
+- an injectable `AudiobookPlaybackEngine`;
+- playback/time/track events;
+- rate, seek, next/previous behavior;
+- bookmarks;
+- Now Playing and remote commands;
+- cleanup.
+
+The default engine is `AVFoundationAudiobookEngine`. Tests inject a fake engine
+for deterministic state transitions and also exercise AVFoundation with real
+unprotected audio.
 
 ## Navigation and events
 
-Position changes flow upward rather than being polled:
+Reflow state flows upward:
 
 ```text
 WebKit scroll/command
-    -> ReflowBridgeEvent
-    -> ReflowLayoutEvent (active spine index applied)
-    -> NavigatorEvent
-    -> host AsyncStream consumer(s)
+  -> ReflowBridgeEvent
+  -> ReflowLayoutEvent with active section
+  -> ContentRenderer updates Reader
+  -> NavigatorEvent
+  -> every host subscriber
 ```
 
-Each event property access creates a separate buffered stream. `EventHub` fans out
-to every active subscriber and finishes streams when the owner is released.
+Fixed/PDF views report visibility/page callbacks directly to host UI, while
+explicit movement and link activation remain synchronized through
+`ContentRenderer`. Audiobook playback has its own broadcast event stream.
 
-Internal link clicks are intercepted inside WebKit, classified in native code,
-resolved against the current chapter, and executed by `ContentRenderer`. External
-links never navigate WebKit directly; the host policy decides their action.
+Navigation href resolution supports relative publication paths, exact internal
+custom-scheme URLs, anchors, DjVu directory targets, and audiobook media
+fragments. External URLs are policy decisions, not implicit navigation.
 
 ## Persistence
 
-`ReaderStateStore` is the persistence boundary. Built-in implementations are:
+`ReaderStateStore` implementations:
 
-- `InMemoryReaderStateStore` for tests and temporary sessions;
-- `FileReaderStateStore` for app-owned JSON files.
+- `InMemoryReaderStateStore` for tests/temporary sessions;
+- `FileReaderStateStore` for app-owned JSON.
 
-Snapshots are keyed by a deterministic publication ID and contain position,
-preferences, bookmarks, and update time. A database or cloud-backed host can
-implement the same protocol without changing the reader.
+Snapshots contain position/timestamp, preferences, bookmarks, and update time.
+Hosts can provide database, app-group, or cloud persistence without changing the
+navigator.
 
 ## Extension points
 
 | Need | Extension point |
 | --- | --- |
-| Different parser selection | `ParserRegistry` / `BookParser` |
-| App-group or custom file access | `FileAccessPolicy` |
-| Database/cloud reader state | `ReaderStateStore` |
-| External-link decisions | `LinkPolicy` |
+| Parser selection | `ParserRegistry` / `BookParser` |
+| App-group/custom file access | `FileAccessPolicy` |
+| Database/cloud state | `ReaderStateStore` |
+| External URL decisions | `LinkPolicy` |
 | Another reflow engine | `ReflowBridge` |
-| DOM-level trusted features | `ReflowScriptPlugin` |
+| Trusted DOM behavior | `ReflowScriptPlugin` |
 | App-specific WebKit setup | `WebViewReflowConfiguration` |
+| Fixed-page UI/voice-over/annotations | `FixedPageBookView` overlay builder |
+| Another audio backend or test engine | `AudiobookPlaybackEngine` |
 
 ## Invariants
 
-- Parser output is platform-view independent.
-- The host explicitly opts into network access.
-- Publication JavaScript is not the same trust domain as host plug-ins.
-- WebKit mutations and navigator coordination stay on the main actor.
+- Parser output is independent of a particular UI.
+- Protected content never reaches ordinary rendering/playback.
+- Network and publication code execution require explicit host decisions.
+- Framework mutations and navigator coordination stay main-actor isolated.
 - Cross-format positions remain serializable and deterministic.
-- Unsupported proprietary behavior is reported as a boundary, not silently
-  advertised as full compatibility.
+- Host customization composes around stable model/geometry/event boundaries.

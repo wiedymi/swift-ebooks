@@ -21,6 +21,37 @@ final class ReflowLayoutTests: XCTestCase {
             return false
         })
         XCTAssertTrue(bridge.commands.contains(.measurePages))
+        XCTAssertTrue(bridge.commands.contains(.setPublicationLayout(.reflowable)))
+    }
+
+    func testFixedChapterUsesScaledPageWrapper() async throws {
+        let bridge = MockReflowBridge()
+        let layout = ReflowLayout(bridge: bridge)
+        let chapter = Chapter(
+            id: "fixed",
+            href: "fixed.xhtml",
+            title: "Fixed",
+            content: "<div class=\"page\">Artwork</div>",
+            mediaType: "application/xhtml+xml",
+            page: PagePresentation(pixelWidth: 1200, pixelHeight: 1800)
+        )
+
+        try await layout.render(
+            chapter: chapter,
+            viewport: Viewport(width: 600, height: 900)
+        )
+
+        XCTAssertTrue(bridge.commands.contains(.setPublicationLayout(.fixed)))
+        guard let command = bridge.commands.first(where: {
+            if case .setContent = $0 { return true }
+            return false
+        }), case let .setContent(html, css, _) = command else {
+            return XCTFail("Expected setContent")
+        }
+        XCTAssertTrue(html.contains("id=\"bookkit-fixed-page\""))
+        XCTAssertTrue(html.contains("data-width=\"1200\""))
+        XCTAssertTrue(html.contains("data-height=\"1800\""))
+        XCTAssertTrue(css.contains("transform-origin"))
     }
 
     func testAppliesIncomingEventsToState() async throws {

@@ -52,13 +52,36 @@ public final class ReflowLayout {
         currentSpineIndex = max(spineIndex, 0)
         lastPosition = Position(spineIndex: currentSpineIndex, progression: 0)
         let sanitized = SanitizeContent.run(chapter.content, allowsNetwork: allowsNetwork)
+        let renderedHTML: String
+        if let page = chapter.page {
+            let width = page.pixelWidth.map(String.init) ?? ""
+            let height = page.pixelHeight.map(String.init) ?? ""
+            renderedHTML = """
+            <div id="bookkit-fixed-page" data-width="\(width)" data-height="\(height)">
+            \(sanitized)
+            </div>
+            """
+        } else {
+            renderedHTML = sanitized
+        }
+        var resolvedCSS = ResolveStyles.run(baseCSS: baseCSS, theme: theme, typography: typography)
+        if chapter.page != nil {
+            resolvedCSS += """
+            \nhtml, body { width: 100%; height: 100%; overflow: hidden; }
+            body { margin: 0; padding: 0; }
+            #bookkit-fixed-page { transform-origin: top left; overflow: hidden; }
+            #bookkit-fixed-page > img,
+            #bookkit-fixed-page > svg { max-width: 100%; max-height: 100%; }
+            """
+        }
         let css = SanitizeContent.css(
-            ResolveStyles.run(baseCSS: baseCSS, theme: theme, typography: typography),
+            resolvedCSS,
             allowsNetwork: allowsNetwork
         )
 
         try await bridge.setNetworkAccessAllowed(allowsNetwork)
-        try await bridge.setContent(html: sanitized, css: css, viewport: viewport)
+        try await bridge.setPublicationLayout(chapter.page == nil ? .reflowable : .fixed)
+        try await bridge.setContent(html: renderedHTML, css: css, viewport: viewport)
         try await bridge.setReadingMode(readingMode)
         try await bridge.setTheme(theme)
         try await bridge.setTypography(typography)

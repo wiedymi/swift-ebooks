@@ -22,5 +22,9 @@ public struct ParserRegistry: Sendable {
         MOBIParser(),
         AZW3Parser(),
         PDFParser(),
+        CBZParser(),
+        TextDocumentParser(),
+        AudiobookParser(),
+        DjVuParser(),
     ])
 }

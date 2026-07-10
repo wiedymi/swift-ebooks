@@ -19,6 +19,7 @@ public final class ContentRenderer: Navigator {
     private let reader: Reader
     private let reflowLayout: ReflowLayout?
     private let pdfAdapter: PDFPageAdapter?
+    private let fixedPageAdapter: FixedPageAdapter?
     private let linkPolicy: any LinkPolicy
     private let embeddedAssetDataURLByID: [String: String]
     private let maxHistoryDepth = 128
@@ -45,13 +46,27 @@ public final class ContentRenderer: Navigator {
         self.linkPolicy = linkPolicy
         embeddedAssetDataURLByID = Self.makeEmbeddedAssetDataURLMap(assets: self.book.assets)
 
-        if self.book.format == .pdf {
+        if self.book.presentation.layout == .audiobook {
+            mode = .audio
+            pdfAdapter = nil
+            fixedPageAdapter = nil
+            reflowLayout = nil
+        } else if self.book.format == .pdf {
             mode = .pdf
             pdfAdapter = PDFPageAdapter(book: self.book)
+            fixedPageAdapter = nil
+            reflowLayout = nil
+        } else if self.book.presentation.layout == .fixed,
+                  Self.isBitmapPublication(self.book)
+        {
+            mode = .fixed
+            pdfAdapter = nil
+            fixedPageAdapter = FixedPageAdapter(book: self.book)
             reflowLayout = nil
         } else {
-            mode = .reflow
+            mode = self.book.presentation.layout == .fixed ? .fixed : .reflow
             pdfAdapter = nil
+            fixedPageAdapter = nil
             guard let reflowBridge else {
                 throw BookError.renderingFailed("Reflow rendering requires a bridge implementation")
             }
@@ -194,13 +209,25 @@ public final class ContentRenderer: Navigator {
         switch mode {
         case .pdf:
             return pdfAdapter?.pageCount ?? 1
-        case .reflow, .fixed:
+        case .fixed:
+            return fixedPageAdapter?.pageCount ?? reflowLayout?.pageMap().pageCount ?? 1
+        case .reflow:
             return reflowLayout?.pageMap().pageCount ?? 1
+        case .audio:
+            return max(book.readingOrder.count, 1)
         }
     }
 
     public func pageMap() -> PageMap? {
-        reflowLayout?.pageMap()
+        if let fixedPageAdapter {
+            return PageMap(
+                pageCount: fixedPageAdapter.pageCount,
+                chapterProgressMap: Dictionary(
+                    uniqueKeysWithValues: book.readingOrder.indices.map { ($0, [0]) }
+                )
+            )
+        }
+        return reflowLayout?.pageMap()
     }
 
     public func restoreState() async throws {
@@ -214,6 +241,17 @@ public final class ContentRenderer: Navigator {
         switch mode {
         case .pdf:
             currentChapterIndex = restoredPosition.spineIndex
+            eventHub.yield(.locatorChanged(book.locator(for: restoredPosition)))
+
+        case .fixed where fixedPageAdapter != nil:
+            currentChapterIndex = fixedPageAdapter?.pageIndex(for: restoredPosition) ?? 0
+            eventHub.yield(.locatorChanged(book.locator(for: restoredPosition)))
+
+        case .audio:
+            currentChapterIndex = min(
+                max(restoredPosition.spineIndex, 0),
+                max(book.readingOrder.count - 1, 0)
+            )
             eventHub.yield(.locatorChanged(book.locator(for: restoredPosition)))
 
         case .reflow, .fixed:
@@ -324,7 +362,7 @@ public final class ContentRenderer: Navigator {
         payload: BridgeValue = .null
     ) async throws -> BridgeValue {
         guard let reflowLayout else {
-            throw BookError.renderingFailed("Custom bridge commands are unavailable for PDF rendering")
+            throw BookError.renderingFailed("Custom bridge commands are unavailable for this rendering mode")
         }
         return try await reflowLayout.callBridgeCommand(name, payload: payload)
     }
@@ -400,6 +438,27 @@ public final class ContentRenderer: Navigator {
         return action
     }
 
+    /// Applies the configured link policy and navigation behavior to a link from
+    /// a CBZ, fixed-layout EPUB, image-only EPUB, or DjVu page.
+    @discardableResult
+    public func handlePageLink(
+        _ link: PageLink,
+        onPageAt pageIndex: Int
+    ) async throws -> LinkAction {
+        guard book.readingOrder.indices.contains(pageIndex) else {
+            throw BookError.navigationFailed("Fixed-page link source is outside the reading order")
+        }
+        guard let baseURL = URL(string: "bookkit://publication/"),
+              let url = URL(string: link.href, relativeTo: baseURL)?.absoluteURL
+        else {
+            throw BookError.navigationFailed("Invalid fixed-page link: \(link.href)")
+        }
+        return try await handleLink(
+            url,
+            context: LinkContext(currentChapterHref: book.readingOrder[pageIndex].href)
+        )
+    }
+
     private func renderChapterInternal(
         at index: Int,
         viewport: Viewport,
@@ -421,6 +480,25 @@ public final class ContentRenderer: Navigator {
                 try await reader.go(to: position)
                 eventHub.yield(.locatorChanged(book.locator(for: position)))
             }
+
+        case .fixed where fixedPageAdapter != nil:
+            guard let adapter = fixedPageAdapter else {
+                throw BookError.renderingFailed("Missing fixed-page adapter")
+            }
+            let position = adapter.position(forPageIndex: index)
+            currentChapterIndex = position.spineIndex
+            try await reader.go(to: position)
+            eventHub.yield(.locatorChanged(book.locator(for: position)))
+
+        case .audio:
+            guard !book.readingOrder.isEmpty else {
+                throw BookError.malformedDocument("Audiobook has no tracks")
+            }
+            let trackIndex = min(max(index, 0), book.readingOrder.count - 1)
+            let position = Position(spineIndex: trackIndex, progression: 0, timestamp: 0)
+            currentChapterIndex = trackIndex
+            try await reader.go(to: position)
+            eventHub.yield(.locatorChanged(book.locator(for: position)))
 
         case .reflow, .fixed:
             guard let layout = reflowLayout else {
@@ -465,6 +543,34 @@ public final class ContentRenderer: Navigator {
             try await reader.go(to: position)
             currentChapterIndex = (await reader.position).spineIndex
 
+        case .fixed where fixedPageAdapter != nil:
+            guard let adapter = fixedPageAdapter else {
+                throw BookError.renderingFailed("Missing fixed-page adapter")
+            }
+            let clamped = adapter.position(forPageIndex: position.spineIndex)
+            try await reader.go(to: Position(
+                spineIndex: clamped.spineIndex,
+                progression: 0,
+                cfi: position.cfi,
+                fragment: position.fragment,
+                textContext: position.textContext,
+                timestamp: position.timestamp
+            ))
+            currentChapterIndex = clamped.spineIndex
+
+        case .audio:
+            guard !book.readingOrder.isEmpty else { return }
+            let trackIndex = min(max(position.spineIndex, 0), book.readingOrder.count - 1)
+            try await reader.go(to: Position(
+                spineIndex: trackIndex,
+                progression: position.progression,
+                cfi: position.cfi,
+                fragment: position.fragment,
+                textContext: position.textContext,
+                timestamp: position.timestamp
+            ))
+            currentChapterIndex = trackIndex
+
         case .reflow, .fixed:
             guard let layout = reflowLayout else {
                 throw BookError.renderingFailed("Missing reflow layout")
@@ -492,7 +598,8 @@ public final class ContentRenderer: Navigator {
                 progression: position.progression,
                 cfi: position.cfi,
                 fragment: position.fragment,
-                textContext: position.textContext
+                textContext: position.textContext,
+                timestamp: position.timestamp
             ))
             try await layout.goToProgression(position.progression)
 
@@ -529,7 +636,7 @@ public final class ContentRenderer: Navigator {
     }
 
     private func nextPageTarget(from position: Position) -> Position {
-        if mode == .pdf {
+        if mode == .pdf || mode == .audio || fixedPageAdapter != nil {
             guard position.spineIndex + 1 < book.readingOrder.count else {
                 return position
             }
@@ -553,7 +660,7 @@ public final class ContentRenderer: Navigator {
     }
 
     private func previousPageTarget(from position: Position) -> Position {
-        if mode == .pdf {
+        if mode == .pdf || mode == .audio || fixedPageAdapter != nil {
             guard position.spineIndex > 0 else {
                 return position
             }
@@ -721,6 +828,12 @@ public final class ContentRenderer: Navigator {
         var chapter = book.readingOrder[index]
         chapter.content = inlineAssetReferences(in: chapter.content)
         return chapter
+    }
+
+    private static func isBitmapPublication(_ book: Book) -> Bool {
+        !book.readingOrder.isEmpty && book.readingOrder.allSatisfy { chapter in
+            chapter.resourceID != nil && chapter.mediaType?.lowercased().hasPrefix("image/") == true
+        }
     }
 
     private func inlineAssetReferences(in html: String) -> String {

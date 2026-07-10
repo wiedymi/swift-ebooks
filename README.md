@@ -6,47 +6,78 @@
 [![Discord](https://img.shields.io/badge/-Discord-5865F2?style=flat-square&logo=discord&logoColor=white)](https://discord.gg/zemMZtrkSb)
 [![Support me](https://img.shields.io/badge/-Support%20me-ff69b4?style=flat-square&logo=githubsponsors&logoColor=white)](https://github.com/sponsors/vivy-company)
 
-Native Swift ebook parsing, navigation, and rendering for Apple platforms.
+Native Swift parsing, navigation, and presentation for DRM-free books on Apple
+platforms.
 
-BookKit opens EPUB 2/3, FB2, MOBI, unencrypted AZW3/KF8, and PDF through one
-normalized model and navigator API. Reflowable content renders with WebKit,
-PDF uses PDFKit, and publication content stays offline and script-free by default.
+BookKit opens EPUB, FB2, MOBI, AZW3/KF8, PDF, CBZ, DjVu, TXT, HTML,
+Markdown, and audiobooks through one normalized publication model. It includes
+reflow and fixed-page navigators, live locators, hierarchical navigation,
+persistence, host-controlled links, accessibility support, and a typed bridge for
+trusted app features such as narration or reading analytics.
 
 ## Status
 
-The core reader works end to end for the repository corpus, including hierarchical
-navigation, internal links, measured pagination, live positions, persistence,
-accessibility, and host-defined JavaScript extensions.
+The supported paths are implemented end to end and covered by 150 automated
+tests. The suite includes real WebKit integration, AVFoundation playback,
+archive/protection checks, fixed-page link geometry, and clean-room DjVu decoder
+fixtures.
 
-See [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) for the tested
-support matrix and explicit format limits. In particular, fixed-layout EPUB, media
-overlays, canonical EPUB CFI generation, HUFF/CDIC, DRM, and complete proprietary
-KF8 reconstruction are not currently supported.
+See [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) for the exact
+support matrix and known compatibility boundaries.
 
 ## Features
 
-- One `Book` model for EPUB, FB2, MOBI, AZW3/KF8, and PDF
-- EPUB 3 navigation documents and EPUB 2 NCX fallback
-- Hierarchical table of contents, landmarks, page lists, and publication links
-- Scroll and measured paginated reading modes
-- Live `AsyncStream` events for location, pagination, selection, links, and content size
-- Position restore, bookmarks, preferences, and bounded jump history
-- Highlights, search markers, and text-to-speech decorations
+- One `Book` model and `ContentRenderer` navigator across visual formats
+- EPUB 2 NCX and EPUB 3 nav, nested TOC, landmarks, and page lists
+- Reflowable and pre-paginated/image-only EPUB
+- CBZ natural ordering, `ComicInfo.xml`, manga RTL, covers, spreads, thumbnails,
+  and prefetching
+- Clean-room DjVu BZZ/ZP, IW44, JB2, MMR, palette, text, outline, and link support
+- W3C/Readium and packaged audiobooks plus MP3, M4A/M4B, and AAC playback
+- TXT, HTML, and Markdown import adapters with generated navigation
+- Live `AsyncStream` events for location, pagination, selection, links, and state
+- Position restore, timestamps, bookmarks, preferences, and jump history
+- VoiceOver-aware reflow, reduced motion, and accessible fixed-page link targets
+- Host overlays for narration focus, annotations, live coordinates, or custom UI
 - Typed app-to-JavaScript commands and JavaScript-to-app events
-- VoiceOver-aware layout, reduced-motion support, and live position announcements
-- Active-content sanitization and explicit network/resource limits
-- SwiftUI wrappers for WebKit content and native PDF pages
-- A complete SwiftUI reference client in `BookKitExample`
+- Offline defaults, publication-script sanitization, and bounded resource loading
+- SwiftUI views for WebKit, PDFKit, and bitmap/fixed-page publications
+- A reference app that exercises every presentation path
 
-## Format Support
+## Format support
 
 | Format | Supported path |
 | --- | --- |
-| EPUB 2/3 | Reflowable spine, metadata, NCX/nav, TOC, landmarks, page list, CSS, and embedded resources |
-| FB2 | Structured metadata, semantic sections, nested TOC, notes, styles, and binary images |
-| MOBI 6 | Uncompressed/PalmDOC text, EXTH metadata, file-position links, guide/TOC, and images |
+| EPUB 2/3 | Reflowable and pre-paginated spine, image-only books, metadata, NCX/nav, TOC, landmarks, page list, CSS, fonts, and embedded resources |
+| FB2 / `.fb2.zip` | Structured metadata, semantic sections, nested TOC, notes, styles, binary images, and a safe single-document ZIP adapter |
+| MOBI 6 | Uncompressed/PalmDOC text, EXTH metadata, file-position links, guide/TOC recovery, and images |
 | AZW3/KF8 | Unencrypted PalmDOC/FDST flows, chapters, styles, metadata, and embedded images |
-| PDF | Metadata, text/page ingestion, outline TOC, page navigation, and native PDFKit view |
+| PDF | PDFKit metadata/text, outline and page-list navigation, live page callbacks, and policy-controlled URL annotations |
+| CBZ | Image pages, natural ordering, ComicInfo metadata/bookmarks, cover and spread detection, LTR/RTL manga layout, thumbnails, and prefetch |
+| DjVu | Single/bundled pages, shared dictionaries, BZZ/ZP, IW44, JB2, MMR, JPEG layers, palettes, rotation, OCR text, outlines, and map-area links |
+| TXT | Unicode text converted into safe reflowable HTML |
+| HTML | Heading-derived nested TOC with active content sanitized before rendering |
+| Markdown | Headings, lists, links, emphasis, quotes, and code converted to safe HTML with a nested TOC |
+| Audiobook | W3C/Readium JSON manifests, packaged audiobooks, MP3/M4A/M4B/AAC, chapters, media fragments, playback, rates, Now Playing, and remote commands |
+
+CBR is intentionally not supported. DjVu is implemented inside BookKit and does
+not embed or link DjVuLibre.
+
+## DRM-free only
+
+BookKit never decrypts a publication, accepts a password/key, or attempts to
+circumvent access controls. It rejects:
+
+- encrypted ZIP entries;
+- EPUB encryption other than standard IDPF font obfuscation;
+- encrypted Kindle records;
+- every encrypted PDF, including files PDFKit might otherwise unlock;
+- protected audiobook manifests and AVFoundation protected assets;
+- Secure DjVu containers.
+
+Using PDFKit, WebKit, ImageIO, or AVFoundation is only a rendering/playback step
+after BookKit's protection checks. A protected file fails with
+`BookError.protectedContent`, including the detected scheme/resource when known.
 
 ## Platforms
 
@@ -56,8 +87,12 @@ KF8 reconstruction are not currently supported.
 - visionOS 1+
 - Swift tools 6.2+
 
-`PDFBookView` is available on iOS, macOS, and visionOS. PDF parsing and page
-navigation remain available on tvOS for a host-provided presentation surface.
+`PDFBookView` is available on iOS, macOS, and visionOS. Parsing/navigation remain
+available on tvOS for a host-provided PDF surface.
+
+Remote audiobook tracks are rejected on visionOS because the platform does not
+expose a reliable protected-content inspection result there. Local and packaged
+DRM-free audio remain supported.
 
 ## Installation
 
@@ -80,56 +115,107 @@ Then add the library product to your target:
 )
 ```
 
-## Quick Start
-
-Open a publication, create the appropriate renderer, and render its first section:
+## Opening and navigating
 
 ```swift
 import BookKit
-import Foundation
 
-@MainActor
-func makeReader(at url: URL) async throws
-    -> (book: Book, renderer: ContentRenderer, bridge: WebViewReflowBridge?)
-{
-    let options = OpenOptions(allowsNetwork: false)
-    let book = try await Book.open(from: url, options: options)
-    let bridge = book.format == .pdf ? nil : WebViewReflowBridge()
-    let renderer = try ContentRenderer(
-        book: book,
-        options: options,
-        reflowBridge: bridge
-    )
+let options = OpenOptions(allowsNetwork: false)
+let book = try await Book.open(from: fileURL, options: options)
+let store = FileReaderStateStore(directory: readerStateDirectory)
 
-    if !book.readingOrder.isEmpty {
-        try await renderer.renderChapter(
-            at: 0,
-            viewport: Viewport(width: 390, height: 844)
-        )
+let needsWebView = book.format != .pdf &&
+    book.presentation.layout != .audiobook &&
+    !(book.presentation.layout == .fixed &&
+      book.readingOrder.allSatisfy { $0.resourceID != nil && $0.mediaType?.hasPrefix("image/") == true })
+
+let bridge = needsWebView ? WebViewReflowBridge() : nil
+let renderer = try ContentRenderer(
+    book: book,
+    options: options,
+    stateStore: store,
+    reflowBridge: bridge
+)
+
+try await renderer.restoreState()
+try await renderer.go(to: book.tableOfContents.first ?? book.pageList.first!)
+```
+
+For a reflowable or XHTML fixed-layout publication:
+
+```swift
+if let bridge {
+    BookView(bridge: bridge)
+}
+```
+
+For PDF:
+
+```swift
+PDFBookView(
+    data: pdfData,
+    pageIndex: position.spineIndex,
+    onPageChanged: updatePage,
+    onLinkActivated: routeThroughAppLinkPolicy
+)
+```
+
+For CBZ, image-only/fixed EPUB, or DjVu:
+
+```swift
+FixedPageBookView(
+    book: book,
+    pageIndex: position.spineIndex,
+    showsSpread: true,
+    onLinkActivated: { activation in
+        Task {
+            try await renderer.handlePageLink(
+                activation.link,
+                onPageAt: activation.pageIndex
+            )
+        }
+    },
+    onVisibilityChanged: { visibility in
+        showProgress(visibility.locator)
     }
-
-    return (book, renderer, bridge)
+) { context in
+    NarrationOverlay(
+        page: context.pageIndex,
+        pageFrame: context.imageFrame,
+        mapSourceBounds: context.frame(for:)
+    )
 }
 ```
 
-For reflowable books, attach the bridge to SwiftUI:
+`ImagePageStore` provides bounded thumbnail caching and neighboring-page
+prefetching for those bitmap publications.
+
+## Audiobooks
+
+`AudiobookPlayer` owns time-based playback independently from the visual
+renderer:
 
 ```swift
-BookView(bridge: bridge)
+let player = try AudiobookPlayer(
+    book: book,
+    options: options,
+    stateStore: store
+)
+
+try await player.prepare()
+player.activateRemoteCommands()
+try await player.play()
+try await player.seek(to: tocLocator.position)
+player.setRate(1.25)
 ```
 
-For PDF, drive the page index through `ContentRenderer` and present the retained
-document asset:
+Playback events contain track-local timestamps and duration-weighted publication
+progress. `shutdown()` persists the current position, removes temporary audio,
+and unregisters remote commands.
 
-```swift
-if let data = book.assets.first(where: { $0.id == "pdf-document" })?.data {
-    PDFBookView(data: data, pageIndex: position.spineIndex)
-}
-```
+## Live events and links
 
-## Navigation and Live Events
-
-Each access to `renderer.events` creates an independent event stream:
+Every access to `renderer.events` creates an independent event stream:
 
 ```swift
 let events = renderer.events
@@ -138,11 +224,11 @@ Task { @MainActor in
     for await event in events {
         switch event {
         case let .locatorChanged(locator):
-            print("Book progress:", locator.totalProgression)
+            showProgress(locator.totalProgression)
         case let .selectionChanged(selection):
-            print("Selected:", selection.text)
+            showSelection(selection.text)
         case let .linkActivated(url, _, action):
-            print("Link:", url, action)
+            handle(url, action: action)
         default:
             break
         }
@@ -150,33 +236,26 @@ Task { @MainActor in
 }
 ```
 
-Use the same navigator for page movement, TOC entries, and jump history:
+Internal destinations use native navigation. External URLs are blocked by
+default; an injected `LinkPolicy` can return `.openExternally`, after which the
+host remains responsible for presenting or opening the URL.
 
-```swift
-try await renderer.nextPage()
-try await renderer.go(to: book.tableOfContents[0])
-_ = try await renderer.goBack()
-```
+## Bridge customization
 
-See [`docs/API.md`](docs/API.md) for locators, persistence, decorations, link
-policy, accessibility, and PDF behavior.
-
-## Bridge Customization
-
-Host scripts run with BookKit in `WKContentWorld.defaultClient`, isolated from
-publication-page JavaScript while still sharing the rendered DOM:
+Trusted host scripts run in `WKContentWorld.defaultClient`, isolated from
+publication JavaScript while sharing the rendered DOM:
 
 ```swift
 let plugin = ReflowScriptPlugin(
-    identifier: "com.example.reader",
+    identifier: "com.example.reader.speech",
     source: """
     window.BookKit.registerCommand('speech.focus', payload => {
       document.getElementById(payload.anchor)?.scrollIntoView();
       return { focused: payload.anchor };
     });
 
-    window.BookKit.on('selectionChanged', selection => {
-      window.BookKit.post('speech.selection', selection);
+    window.BookKit.on('positionChanged', position => {
+      window.BookKit.post('speech.position', position);
     });
     """
 )
@@ -184,68 +263,36 @@ let plugin = ReflowScriptPlugin(
 let bridge = WebViewReflowBridge(
     configuration: WebViewReflowConfiguration(plugins: [plugin])
 )
-let renderer = try ContentRenderer(book: book, reflowBridge: bridge)
-
-let reply = try await renderer.callBridgeCommand(
-    "speech.focus",
-    payload: .object(["anchor": .string("paragraph-12")])
-)
 ```
 
-Custom plug-in messages arrive as `NavigatorEvent.bridgeMessage`. The complete
-bridge contract is documented in [`docs/BRIDGE_EXTENSIONS.md`](docs/BRIDGE_EXTENSIONS.md).
+See [`docs/BRIDGE_EXTENSIONS.md`](docs/BRIDGE_EXTENSIONS.md) for the complete
+command, event, lifecycle, and security contract.
 
-## Running Tests
-
-Initialize the reference submodules and verify the real-book corpus:
+## Validation
 
 ```bash
 git submodule update --init --recursive
 ./scripts/verify_corpus.sh
 swift test
-```
-
-Build the release configuration:
-
-```bash
 swift build -c release
 ```
 
-## Example App
-
-`BookKitExample` is a SwiftUI reference client with file import, hierarchical
-navigation, live reader telemetry, persistence, bookmarks, accessibility syncing,
-custom bridge commands, and native PDF pages.
+The reference app supports file import and deterministic launch checks:
 
 ```bash
 swift run BookKitExample
-```
-
-For deterministic launch checks, bypass the file picker:
-
-```bash
 swift run BookKitExample --demo tests/corpus/files/epictetus.epub
 ```
 
-The process prints `BOOKKIT_EXAMPLE_READY` after the publication has opened.
-
 ## Docs
 
-- [`docs/README.md`](docs/README.md) - documentation index
-- [`docs/API.md`](docs/API.md) - opening, rendering, navigation, state, and host policies
-- [`docs/BRIDGE_EXTENSIONS.md`](docs/BRIDGE_EXTENSIONS.md) - isolated JavaScript plug-ins and typed messages
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) - parsing, normalization, rendering, and event ownership
-- [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) - tested support matrix and known limits
-- [`docs/TEST_COVERAGE.md`](docs/TEST_COVERAGE.md) - automated validation and corpus strategy
-- [`docs/SPEC.md`](docs/SPEC.md) - v1 scope, invariants, and acceptance criteria
-- [`docs/REFERENCE_SURVEY.md`](docs/REFERENCE_SURVEY.md) - permissive-license implementation references
-
-## Repository Notes
-
-- `refs/` contains upstream projects as git submodules for architecture and behavior study.
-- The implementation is MIT-licensed and does not copy or mechanically port reference code.
-- Publication scripts are disabled; host plug-ins are trusted app code installed separately.
-- DRM decryption is intentionally out of scope.
+- [`docs/API.md`](docs/API.md) — integration and public surfaces
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — parser, navigator, and view ownership
+- [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md) — tested support matrix and boundaries
+- [`docs/TEST_COVERAGE.md`](docs/TEST_COVERAGE.md) — automated evidence and release checks
+- [`docs/SPEC.md`](docs/SPEC.md) — product invariants and acceptance criteria
+- [`docs/BRIDGE_EXTENSIONS.md`](docs/BRIDGE_EXTENSIONS.md) — trusted WebKit extensions
+- [`docs/REFERENCE_SURVEY.md`](docs/REFERENCE_SURVEY.md) — implementation references and licensing notes
 
 ## License
 

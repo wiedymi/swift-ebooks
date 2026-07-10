@@ -1,7 +1,30 @@
 import Foundation
 
+public enum ContentProtectionKind: String, Sendable, Equatable, Hashable, Codable {
+    case zipEncryption
+    case epubEncryption
+    case pdfEncryption
+    case kindleDRM
+    case audioDRM
+    case djvuEncryption
+    case unknown
+}
+
+public struct ContentProtection: Sendable, Equatable, Hashable, Codable {
+    public var kind: ContentProtectionKind
+    public var scheme: String?
+    public var resource: String?
+
+    public init(kind: ContentProtectionKind, scheme: String? = nil, resource: String? = nil) {
+        self.kind = kind
+        self.scheme = scheme
+        self.resource = resource
+    }
+}
+
 public enum BookError: Error, Sendable, Equatable {
     case unsupportedFormat
+    case protectedContent(ContentProtection)
     case invalidContainer(String)
     case malformedDocument(String)
     case missingAsset(String)
@@ -22,6 +45,10 @@ extension BookError: LocalizedError {
         switch self {
         case .unsupportedFormat:
             return "This ebook format or encoding is not supported."
+        case let .protectedContent(protection):
+            let scheme = protection.scheme.map { " Scheme: \($0)." } ?? ""
+            let resource = protection.resource.map { " Resource: \($0)." } ?? ""
+            return "BookKit opens DRM-free publications only; this file contains protected content.\(scheme)\(resource)"
         case let .invalidContainer(message):
             return "Invalid ebook container: \(message)"
         case let .malformedDocument(message):
