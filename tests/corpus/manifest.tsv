@@ -1,0 +1,6 @@
+# id	format	path	sha256	bytes	license	source	notes
+epictetus_epub	epub	tests/corpus/files/epictetus.epub	03b6844e74d6fc3db96b9d8e826b5450756d08e1700ede84e2598155760d98e7	459174	Public-domain source text + CC0 contributions (book metadata); repo MIT	refs/boko/tests/fixtures/epictetus.epub	Primary EPUB corpus sample with real-world structure.
+epictetus_mobi	mobi	tests/corpus/files/epictetus.mobi	22024182e48d3d6a0d294604ac737818cd3e484735a974597d6daafbc84a5583	482279	Public-domain source text + CC0 contributions (book metadata); repo MIT	refs/boko/tests/fixtures/epictetus.mobi	Primary MOBI corpus sample.
+epictetus_azw3	azw3	tests/corpus/files/epictetus.azw3	6b7d06be1c14152a3ed71139642fd9ad5b411446472e7a2f5eedf44b89a6a303	538455	Public-domain source text + CC0 contributions (book metadata); repo MIT	refs/boko/tests/fixtures/epictetus.azw3	Primary AZW3/KF8 corpus sample (unencrypted).
+fb2_complex	fb2	tests/corpus/files/complex.fb2	0354156c10f63312fc714ee2e868ab568a27ad52d8fd771e8a557038d78842a3	11799	MIT (upstream repo fixture)	refs/fb2-rs/tests/resources/complex.fb2	FB2 structural coverage sample.
+pdf_hello	pdf	tests/corpus/files/helloworld.pdf	c9efcaa374939ff19fc37974131f1db6d457eb942700c02a63fc9dda983e1400	678	Apache-2.0 (upstream repo)	refs/pdfjs/examples/learning/helloworld.pdf	PDF smoke sample for parser/adapter checks.

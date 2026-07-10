@@ -1,0 +1,30 @@
+[submodule "refs/readium-swift-toolkit"]
+	path = refs/readium-swift-toolkit
+	url = https://github.com/readium/swift-toolkit.git
+[submodule "refs/epubjs"]
+	path = refs/epubjs
+	url = https://github.com/futurepress/epub.js.git
+[submodule "refs/epubkit"]
+	path = refs/epubkit
+	url = https://github.com/witekbobrowski/EPUBKit.git
+[submodule "refs/rbook"]
+	path = refs/rbook
+	url = https://github.com/DevinSterling/rbook.git
+[submodule "refs/fb2-rs"]
+	path = refs/fb2-rs
+	url = https://github.com/r-glazkov/fb2.git
+[submodule "refs/mobi-rs"]
+	path = refs/mobi-rs
+	url = https://github.com/vv9k/mobi-rs.git
+[submodule "refs/boko"]
+	path = refs/boko
+	url = https://github.com/zacharydenton/boko.git
+[submodule "refs/foliate-js"]
+	path = refs/foliate-js
+	url = https://github.com/johnfactotum/foliate-js.git
+[submodule "refs/pdfjs"]
+	path = refs/pdfjs
+	url = https://github.com/mozilla/pdf.js.git
+[submodule "refs/lopdf"]
+	path = refs/lopdf
+	url = https://github.com/J-F-Liu/lopdf.git
