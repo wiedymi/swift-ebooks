@@ -42,15 +42,9 @@ let speechPlugin = ReflowScriptPlugin(
     """
 )
 
-let bridge = WebViewReflowBridge(
-    configuration: WebViewReflowConfiguration(
-        plugins: [speechPlugin]
-    )
-)
-
-let renderer = try ContentRenderer(
-    book: book,
-    reflowBridge: bridge
+let reader = try await BookReader.open(
+    from: fileURL,
+    configuration: .init(plugins: [speechPlugin])
 )
 ```
 
@@ -73,10 +67,10 @@ window.BookKit.registerCommand('speech.focus', async payload => {
 });
 ```
 
-Call it from the renderer:
+Call it from the reader:
 
 ```swift
-let result = try await renderer.callBridgeCommand(
+let result = try await reader.callBridgeCommand(
     "speech.focus",
     payload: .object([
         "anchor": .string("paragraph-12")
@@ -182,31 +176,11 @@ The bridge emits high-frequency position updates at most once per animation fram
 and suppresses duplicate progression/anchor pairs. Explicit navigation commands
 still emit a deterministic position update.
 
-## Customizing WKWebViewConfiguration
-
-Use the configuration callback for app-owned WebKit setup that must happen before
-the `WKWebView` is created:
-
-```swift
-let configuration = WebViewReflowConfiguration(
-    plugins: [speechPlugin],
-    customizeWebViewConfiguration: { configuration in
-        configuration.applicationNameForUserAgent = "ExampleReader/1.0"
-    }
-)
-
-let bridge = WebViewReflowBridge(configuration: configuration)
-```
-
-The callback can change BookKit's defaults, including the non-persistent data
-store and disabled page JavaScript. Preserve those defaults unless the application
-has explicitly reviewed the security consequences.
-
 ## Link handling
 
 BookKit intercepts every publication anchor click and prevents WebKit's default
-navigation. The click becomes a native bridge event, then `ContentRenderer`
-applies the configured `LinkPolicy`.
+navigation. The click becomes a native bridge event, then `BookReader` applies
+the configured `LinkPolicy`.
 
 Do not add a plug-in click handler that performs navigation independently. Use the
 `linkTapped` lifecycle hook for observation and the native `LinkPolicy` for the

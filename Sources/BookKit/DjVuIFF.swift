@@ -1,13 +1,13 @@
 import Foundation
 
-public enum DjVuRotation: Int, Sendable, Equatable, Hashable, Codable {
+enum DjVuRotation: Int, Sendable, Equatable, Hashable, Codable {
     case upright = 1
     case counterClockwise90 = 6
     case upsideDown = 2
     case clockwise90 = 5
 }
 
-public struct DjVuPageInfo: Sendable, Equatable, Hashable, Codable {
+struct DjVuPageInfo: Sendable, Equatable, Hashable, Codable {
     public var width: Int
     public var height: Int
     public var minorVersion: Int

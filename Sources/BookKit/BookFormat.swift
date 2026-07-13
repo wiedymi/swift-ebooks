@@ -31,7 +31,7 @@ public enum BookFormat: String, CaseIterable, Sendable, Equatable, Hashable {
     }
 }
 
-public enum FormatSniffer {
+enum FormatSniffer {
     public static func detect(fileName: String) -> BookFormat? {
         if fileName.lowercased().hasSuffix(".fb2.zip") {
             return .fb2

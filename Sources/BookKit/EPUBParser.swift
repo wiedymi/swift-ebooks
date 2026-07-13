@@ -1,7 +1,7 @@
 import Foundation
 import ZIPFoundation
 
-public struct EPUBParser: BookParser {
+struct EPUBParser: BookParser {
     public let formats: Set<BookFormat> = [.epub]
 
     public init() {}

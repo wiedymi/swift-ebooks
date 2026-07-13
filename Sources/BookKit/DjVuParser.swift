@@ -1,6 +1,6 @@
 import Foundation
 
-public struct DjVuParser: BookParser {
+struct DjVuParser: BookParser {
     public let formats: Set<BookFormat> = [.djvu]
 
     public init() {}

@@ -1,6 +1,6 @@
 import Foundation
 
-public actor AudioResourceStore {
+actor AudioResourceStore {
     private let book: Book
     private let allowsNetwork: Bool
     private let directory: URL

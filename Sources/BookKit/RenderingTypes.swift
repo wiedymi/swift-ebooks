@@ -53,7 +53,7 @@ public struct Typography: Sendable, Equatable, Hashable, Codable {
     public static let `default` = Typography()
 }
 
-public enum RenderMode: Sendable, Equatable {
+enum RenderMode: Sendable, Equatable {
     case reflow
     case fixed
     case pdf

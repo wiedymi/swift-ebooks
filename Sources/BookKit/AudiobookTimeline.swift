@@ -1,6 +1,6 @@
 import Foundation
 
-public struct AudiobookTimeline: Sendable {
+struct AudiobookTimeline: Sendable {
     public let book: Book
 
     public init(book: Book) throws {

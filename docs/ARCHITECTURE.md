@@ -20,15 +20,22 @@ FormatSniffer -> ParserRegistry
         v
 Book + Metadata + Chapter + Asset + TOCNode + Presentation
         |
-        +-- reflow/XHTML fixed -> ContentRenderer -> ReflowLayout -> WebViewReflow -> BookView
+        v
+BookReader + one shared ReaderStateActor
+        |
+        +-- reflow/XHTML fixed -> ContentRenderer -> ReflowLayout -> WebViewReflow
         +-- PDF                -> ContentRenderer -> PDFPageAdapter + PDFBookView
         +-- bitmap fixed       -> ContentRenderer -> FixedPageAdapter + FixedPageBookView
         +-- audiobook          -> AudiobookTimeline + AudiobookPlayer -> playback engine
+        |
+        v
+BookReaderView
 ```
 
-`ContentRenderer` remains the shared visual navigator and link-policy/history
-coordinator. `AudiobookPlayer` is separate because playback state is time based
-and owns AVFoundation/Now Playing behavior.
+`BookReader` is the public session boundary. It owns engine selection, navigation,
+persistence, observable state, link policy, events, and lifecycle. `BookReaderView`
+selects the native presentation internally. `ContentRenderer` and
+`AudiobookPlayer` remain focused engines behind the session.
 
 ## Source and parser layer
 
@@ -88,19 +95,22 @@ the view layer stays format independent.
 
 ## Reader state ownership
 
-`Reader` is an actor responsible for position, preferences, bookmarks, and
-`ReaderStateStore` persistence. It owns no platform view.
+`ReaderStateActor` is responsible for position, preferences, bookmarks, and
+`ReaderStateStore` persistence. It owns no platform view. Each `BookReader`
+creates exactly one state actor and injects it into both navigation and playback,
+so an audiobook never has competing persistence owners.
 
-`ContentRenderer` is `@MainActor` and owns:
+`BookReader` and `ContentRenderer` are `@MainActor`. `ContentRenderer` owns:
 
-- a normalized `Book` and one `Reader`;
+- a normalized `Book` and one `ReaderStateActor`;
 - the active reflow, PDF, or fixed-page adapter;
 - jump history;
 - decorations/accessibility policy;
 - link routing and visual navigator events.
 
-This keeps persistence mutable state off the UI actor while framework-facing
-coordination stays on the correct actor.
+`BookReader` maps renderer and player events into published state and one
+`BookReaderEvent` stream. This keeps persistence mutable state off the UI actor
+while framework-facing coordination stays on the correct actor.
 
 ## Reflow and XHTML fixed layout
 
@@ -176,9 +186,8 @@ routes those URLs through its policy.
 `AudiobookTimeline` maps track indexes, clip bounds, timestamps, local progress,
 and duration-weighted total progress.
 
-`AudiobookPlayer` owns:
+`AudiobookPlayer` owns audio-specific behavior:
 
-- its `Reader` persistence state;
 - `AudioResourceStore` materialization/network policy;
 - an injectable `AudiobookPlaybackEngine`;
 - playback/time/track events;
@@ -186,6 +195,10 @@ and duration-weighted total progress.
 - bookmarks;
 - Now Playing and remote commands;
 - cleanup.
+
+The enclosing `BookReader` supplies the same state actor used by navigation,
+projects playback snapshots into observable session state, and exposes unified
+navigation and bookmark commands.
 
 The default engine is `AVFoundationAudiobookEngine`. Tests inject a fake engine
 for deterministic state transitions and also exercise AVFoundation with real
@@ -199,14 +212,14 @@ Reflow state flows upward:
 WebKit scroll/command
   -> ReflowBridgeEvent
   -> ReflowLayoutEvent with active section
-  -> ContentRenderer updates Reader
+  -> ContentRenderer updates ReaderStateActor
   -> NavigatorEvent
   -> every host subscriber
 ```
 
-Fixed/PDF views report visibility/page callbacks directly to host UI, while
-explicit movement and link activation remain synchronized through
-`ContentRenderer`. Audiobook playback has its own broadcast event stream.
+`BookReaderView` consumes fixed/PDF visibility and page callbacks and synchronizes
+them with `ContentRenderer`; these callbacks do not escape into ordinary host
+code. Audiobook events are similarly projected through `BookReader`.
 
 Navigation href resolution supports relative publication paths, exact internal
 custom-scheme URLs, anchors, DjVu directory targets, and audiobook media
@@ -227,15 +240,14 @@ navigator.
 
 | Need | Extension point |
 | --- | --- |
+| Complete reading session | `BookReader` |
+| Default presentation for every format | `BookReaderView` |
 | Parser selection | `ParserRegistry` / `BookParser` |
 | App-group/custom file access | `FileAccessPolicy` |
 | Database/cloud state | `ReaderStateStore` |
 | External URL decisions | `LinkPolicy` |
-| Another reflow engine | `ReflowBridge` |
 | Trusted DOM behavior | `ReflowScriptPlugin` |
-| App-specific WebKit setup | `WebViewReflowConfiguration` |
 | Fixed-page UI/voice-over/annotations | `FixedPageBookView` overlay builder |
-| Another audio backend or test engine | `AudiobookPlaybackEngine` |
 
 ## Invariants
 

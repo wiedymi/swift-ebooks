@@ -4,7 +4,7 @@ import Foundation
 import PDFKit
 #endif
 
-public struct PDFParser: BookParser {
+struct PDFParser: BookParser {
     public let formats: Set<BookFormat> = [.pdf]
 
     public init() {}

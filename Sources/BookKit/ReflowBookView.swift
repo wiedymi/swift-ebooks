@@ -4,24 +4,23 @@ import Foundation
 import SwiftUI
 import WebKit
 
-public struct BookView: View {
+/// Internal SwiftUI container for the session-owned reflow web view.
+struct ReflowBookView: View {
     private let webView: WKWebView
 
-    public init(webView: WKWebView) {
+    init(webView: WKWebView) {
         self.webView = webView
     }
 
     @MainActor
-    public init(bridge: WebViewReflowBridge) {
+    init(bridge: WebViewReflowBridge) {
         self.webView = bridge.webView
     }
 
-    public var body: some View {
+    var body: some View {
         _BookWebViewContainer(webView: webView)
     }
 }
-
-public typealias PageView = BookView
 
 #if os(iOS) || os(tvOS) || os(visionOS)
 private struct _BookWebViewContainer: UIViewRepresentable {

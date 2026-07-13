@@ -1,6 +1,6 @@
 import Foundation
 
-public struct FB2Parser: BookParser {
+struct FB2Parser: BookParser {
     public let formats: Set<BookFormat> = [.fb2]
 
     public init() {}

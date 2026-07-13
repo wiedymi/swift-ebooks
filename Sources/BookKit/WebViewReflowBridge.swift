@@ -4,7 +4,7 @@ import Foundation
 import WebKit
 
 @MainActor
-public struct WebViewReflowConfiguration {
+struct WebViewReflowConfiguration {
     public var plugins: [ReflowScriptPlugin]
     public var customizeWebViewConfiguration: (@MainActor (WKWebViewConfiguration) -> Void)?
 
@@ -18,7 +18,7 @@ public struct WebViewReflowConfiguration {
 }
 
 @MainActor
-public final class WebViewReflowBridge: NSObject, ReflowBridge, WKScriptMessageHandler, WKNavigationDelegate {
+final class WebViewReflowBridge: NSObject, ReflowBridge, WKScriptMessageHandler, WKNavigationDelegate {
     private static let handlerName = "bookkitBridge"
 
     public let webView: WKWebView

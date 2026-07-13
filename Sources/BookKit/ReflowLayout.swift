@@ -1,6 +1,6 @@
 import Foundation
 
-public enum ReflowLayoutEvent: Sendable, Equatable {
+enum ReflowLayoutEvent: Sendable, Equatable {
     case ready
     case paginationChanged(PageMap)
     case positionChanged(Position)
@@ -12,7 +12,7 @@ public enum ReflowLayoutEvent: Sendable, Equatable {
 }
 
 @MainActor
-public final class ReflowLayout {
+final class ReflowLayout {
     private let bridge: any ReflowBridge
     private let allowsNetwork: Bool
     private var eventTask: Task<Void, Never>?

@@ -1,6 +1,6 @@
 # BookKit product specification
 
-Date: 2026-07-10
+Date: 2026-07-13
 
 This document defines the public product contract. See
 [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md) for exact compatibility
@@ -32,10 +32,8 @@ BookKit provides one native Swift API for:
 | DjVu | Clean-room parsing/decoding of the documented bundled visual/text/navigation path |
 | Document adapters | TXT, standalone HTML, and Markdown converted to safe reflow content |
 | Audiobooks | W3C/Readium manifests, packaged audio, and supported standalone audio through AVFoundation |
-| Reflow UI | `WebViewReflowBridge` plus `BookView` |
-| Fixed UI | `FixedPageBookView`, `FixedPageAdapter`, and `ImagePageStore` |
-| PDF UI | `PDFBookView` on iOS, macOS, and visionOS |
-| Audio | `AudiobookPlayer`, `AudiobookTimeline`, and `AVFoundationAudiobookEngine` |
+| Reading session | `BookReader` for every supported format |
+| Default UI | `BookReaderView` with internal reflow, fixed, PDF, and audio engines |
 
 Supported platforms:
 
@@ -61,8 +59,8 @@ Supported platforms:
 ## Design invariants
 
 1. `Book` is the format-independent source of truth.
-2. Layout differences are typed as reflowable, fixed, or audiobook presentation.
-3. Parser-specific state does not leak into general navigator control flow.
+2. Layout differences are typed internally and never require host engine selection.
+3. Parser- and engine-specific state does not leak into general reader control flow.
 4. Disk, network, temporary storage, and resource limits are explicit.
 5. Network access and publication JavaScript are disabled by default.
 6. Protected content fails with `BookError.protectedContent`; it is never passed
@@ -74,6 +72,7 @@ Supported platforms:
 11. Internal destinations use native navigation; external URLs use host policy.
 12. Unsupported compatibility boundaries are documented rather than silently
     advertised as complete support.
+13. One `BookReader` session has one shared mutable reader-state owner.
 
 ## Source and resource contract
 
@@ -81,7 +80,7 @@ Supported platforms:
 public enum BookSource: Sendable {
     case url(URL)
     case data(Data, fileName: String?)
-    case stream(fileName: String?, provider: @Sendable () throws -> Data)
+    case dataProvider(fileName: String?, provider: @Sendable () throws -> Data)
 }
 ```
 
@@ -147,12 +146,17 @@ Audio chapters may include duration and clip boundaries.
 `Locator` adds the section href and total-publication progression. Audiobook total
 progress is weighted by track duration, not track count.
 
-The navigator must support locators, TOC items, next/previous movement,
+`BookReader` must support locators, TOC items, next/previous movement,
 back/forward history, preferences, accessibility settings, and link routing.
 Audiobook media fragments such as `#t=70` and `#t=npt:01:10` resolve to timed
 positions.
 
 ## Presentation contracts
+
+`BookReaderView` must choose the presentation engine from its `BookReader`
+without requiring callers to inspect the format, layout, chapter MIME types, or
+assets. It owns viewport updates and synchronizes native PDF/fixed callbacks
+back into the session.
 
 ### Reflow
 
@@ -181,18 +185,16 @@ implicitly.
 
 ### Audiobook
 
-`AudiobookPlayer` must provide preparation, playback/pause, exact seeking,
+The audio engine must provide preparation, playback/pause, exact seeking,
 track transitions, rates, events, bookmarks, persistence, Now Playing/remote
 commands where available, protected-asset checks, and temporary-resource cleanup.
 
 ## Event contract
 
-`NavigatorEvent` covers readiness, locators, page maps, selection, content size,
-history, reading mode, preferences, accessibility, links, decoration taps,
-custom bridge messages, and errors.
-
-`AudiobookPlaybackEvent` covers readiness, state, live time, track changes, end,
-and errors.
+`BookReaderEvent` covers readiness, locators, page maps, selection, content size,
+history, preferences, accessibility, links, decoration taps, custom bridge
+messages, playback state/track/end, and errors. Engine-specific streams are
+projected into this session stream.
 
 Streams are broadcast: a slow or cancelled consumer cannot take events from
 another consumer. Passive WebKit positions are animation-frame coalesced and
@@ -211,7 +213,7 @@ database, app-group, or cloud implementation.
 - External URLs are blocked by `DefaultLinkPolicy`.
 - A host may return `.openExternally`, but the host performs the actual open.
 - `javascript:`, `file:`, and unknown schemes remain blocked by default.
-- Fixed-page and reflow links use the same `ContentRenderer` policy/history path.
+- Fixed-page, PDF, and reflow links use the same `BookReader` policy/history path.
 - PDF URL annotations are intercepted before PDFKit's default opener.
 
 ## Accessibility contract

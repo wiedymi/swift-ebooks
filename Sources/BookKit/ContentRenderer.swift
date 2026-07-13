@@ -1,7 +1,7 @@
 import Foundation
 
 @MainActor
-public final class ContentRenderer: Navigator {
+final class ContentRenderer: Navigator {
     private struct RenderContext {
         let viewport: Viewport
         let theme: Theme
@@ -9,14 +9,14 @@ public final class ContentRenderer: Navigator {
         let baseCSS: String
     }
 
-    public let book: Book
-    public let mode: RenderMode
-    public var events: AsyncStream<NavigatorEvent> {
+    let book: Book
+    let mode: RenderMode
+    var events: AsyncStream<NavigatorEvent> {
         eventHub.stream()
     }
 
     private let eventHub = EventHub<NavigatorEvent>()
-    private let reader: Reader
+    private let reader: ReaderStateActor
     private let reflowLayout: ReflowLayout?
     private let pdfAdapter: PDFPageAdapter?
     private let fixedPageAdapter: FixedPageAdapter?
@@ -33,7 +33,7 @@ public final class ContentRenderer: Navigator {
     private var lastDecorationTapEvent: DecorationTapEvent?
     private var accessibilitySettings: ReaderAccessibilitySettings = .default
 
-    public init(
+    convenience init(
         book: Book,
         options: OpenOptions = OpenOptions(),
         stateStore: (any ReaderStateStore)? = nil,
@@ -41,29 +41,52 @@ public final class ContentRenderer: Navigator {
         reflowBridge: (any ReflowBridge)? = nil,
         preferences: ReaderPreferences = .default
     ) throws {
-        self.book = Normalize.run(book, allowsNetwork: options.allowsNetwork)
-        reader = Reader(book: self.book, stateStore: stateStore, preferences: preferences)
+        let normalizedBook = Normalize.run(book, allowsNetwork: options.allowsNetwork)
+        try self.init(
+            book: normalizedBook,
+            reader: ReaderStateActor(
+                book: normalizedBook,
+                stateStore: stateStore,
+                preferences: preferences
+            ),
+            options: options,
+            linkPolicy: linkPolicy,
+            reflowBridge: reflowBridge
+        )
+    }
+
+    init(
+        book: Book,
+        reader: ReaderStateActor,
+        options: OpenOptions,
+        linkPolicy: any LinkPolicy,
+        reflowBridge: (any ReflowBridge)?
+    ) throws {
+        self.book = book
+        self.reader = reader
         self.linkPolicy = linkPolicy
         embeddedAssetDataURLByID = Self.makeEmbeddedAssetDataURLMap(assets: self.book.assets)
 
-        if self.book.presentation.layout == .audiobook {
+        switch BookPresentationEngine(book: self.book) {
+        case .audio:
             mode = .audio
             pdfAdapter = nil
             fixedPageAdapter = nil
             reflowLayout = nil
-        } else if self.book.format == .pdf {
+
+        case .pdf:
             mode = .pdf
             pdfAdapter = PDFPageAdapter(book: self.book)
             fixedPageAdapter = nil
             reflowLayout = nil
-        } else if self.book.presentation.layout == .fixed,
-                  Self.isBitmapPublication(self.book)
-        {
+
+        case .bitmapFixed:
             mode = .fixed
             pdfAdapter = nil
             fixedPageAdapter = FixedPageAdapter(book: self.book)
             reflowLayout = nil
-        } else {
+
+        case .reflow, .xhtmlFixed:
             mode = self.book.presentation.layout == .fixed ? .fixed : .reflow
             pdfAdapter = nil
             fixedPageAdapter = nil
@@ -80,7 +103,7 @@ public final class ContentRenderer: Navigator {
         layoutEventTask?.cancel()
     }
 
-    public func renderChapter(
+    func renderChapter(
         at index: Int,
         viewport: Viewport,
         theme: Theme = .light,
@@ -101,7 +124,7 @@ public final class ContentRenderer: Navigator {
         )
     }
 
-    public func nextPage() async throws {
+    func nextPage() async throws {
         let before = await currentPosition()
         let target = nextPageTarget(from: before)
         guard target != before else { return }
@@ -112,7 +135,7 @@ public final class ContentRenderer: Navigator {
         }
     }
 
-    public func previousPage() async throws {
+    func previousPage() async throws {
         let before = await currentPosition()
         let target = previousPageTarget(from: before)
         guard target != before else { return }
@@ -123,13 +146,13 @@ public final class ContentRenderer: Navigator {
         }
     }
 
-    public func go(to position: Position) async throws {
+    func go(to position: Position) async throws {
         try await navigateWithoutHistory(to: position)
         let locator = await currentLocator()
         eventHub.yield(.locatorChanged(locator))
     }
 
-    public func go(to locator: Locator) async throws {
+    func go(to locator: Locator) async throws {
         let before = await currentPosition()
         try await navigateWithoutHistory(to: locator.position)
         let after = await currentPosition()
@@ -137,7 +160,7 @@ public final class ContentRenderer: Navigator {
         eventHub.yield(.locatorChanged(book.locator(for: after)))
     }
 
-    public func go(to navigationItem: TOCNode) async throws {
+    func go(to navigationItem: TOCNode) async throws {
         guard let locator = book.locator(forNavigationHref: navigationItem.href) else {
             throw BookError.navigationFailed(
                 "Unable to resolve navigation destination: \(navigationItem.href)"
@@ -146,7 +169,7 @@ public final class ContentRenderer: Navigator {
         try await go(to: locator)
     }
 
-    public func goBack() async throws -> Locator? {
+    func goBack() async throws -> Locator? {
         guard let target = backHistory.popLast() else {
             return nil
         }
@@ -165,7 +188,7 @@ public final class ContentRenderer: Navigator {
         return locator
     }
 
-    public func goForward() async throws -> Locator? {
+    func goForward() async throws -> Locator? {
         guard let target = forwardHistory.popLast() else {
             return nil
         }
@@ -184,15 +207,15 @@ public final class ContentRenderer: Navigator {
         return locator
     }
 
-    public func canGoBack() -> Bool {
+    func canGoBack() -> Bool {
         !backHistory.isEmpty
     }
 
-    public func canGoForward() -> Bool {
+    func canGoForward() -> Bool {
         !forwardHistory.isEmpty
     }
 
-    public func currentPosition() async -> Position {
+    func currentPosition() async -> Position {
         if let layoutPosition = reflowLayout?.position() {
             await reader.sync(to: layoutPosition)
             currentChapterIndex = layoutPosition.spineIndex
@@ -200,12 +223,12 @@ public final class ContentRenderer: Navigator {
         return await reader.position
     }
 
-    public func currentLocator() async -> Locator {
+    func currentLocator() async -> Locator {
         let position = await currentPosition()
         return book.locator(for: position)
     }
 
-    public func pageCount() -> Int {
+    func pageCount() -> Int {
         switch mode {
         case .pdf:
             return pdfAdapter?.pageCount ?? 1
@@ -218,7 +241,7 @@ public final class ContentRenderer: Navigator {
         }
     }
 
-    public func pageMap() -> PageMap? {
+    func pageMap() -> PageMap? {
         if let fixedPageAdapter {
             return PageMap(
                 pageCount: fixedPageAdapter.pageCount,
@@ -230,7 +253,7 @@ public final class ContentRenderer: Navigator {
         return reflowLayout?.pageMap()
     }
 
-    public func restoreState() async throws {
+    func restoreState() async throws {
         try await reader.restore()
         let restoredPosition = await reader.position
         let restoredPreferences = await reader.currentPreferences()
@@ -274,30 +297,30 @@ public final class ContentRenderer: Navigator {
         }
     }
 
-    public func addBookmark(note: String? = nil) async throws -> ReadingBookmark {
+    func addBookmark(note: String? = nil) async throws -> ReadingBookmark {
         if let layoutPosition = reflowLayout?.position() {
             try await reader.go(to: layoutPosition)
         }
         return try await reader.addBookmark(note: note)
     }
 
-    public func removeBookmark(id: UUID) async throws {
+    func removeBookmark(id: UUID) async throws {
         try await reader.removeBookmark(id: id)
     }
 
-    public func updateBookmark(id: UUID, note: String?) async throws {
+    func updateBookmark(id: UUID, note: String?) async throws {
         try await reader.updateBookmark(id: id, note: note)
     }
 
-    public func bookmarks() async -> [ReadingBookmark] {
+    func bookmarks() async -> [ReadingBookmark] {
         await reader.bookmarksList()
     }
 
-    public func preferences() async -> ReaderPreferences {
+    func preferences() async -> ReaderPreferences {
         await reader.currentPreferences()
     }
 
-    public func setPreferences(_ preferences: ReaderPreferences) async throws {
+    func setPreferences(_ preferences: ReaderPreferences) async throws {
         try await reader.setPreferences(preferences)
         eventHub.yield(.preferencesChanged(preferences))
 
@@ -314,34 +337,34 @@ public final class ContentRenderer: Navigator {
         eventHub.yield(.readingModeChanged(effectiveReadingMode(preferences: preferences)))
     }
 
-    public func readingMode() async -> ReadingMode {
+    func readingMode() async -> ReadingMode {
         let prefs = await reader.currentPreferences()
         return effectiveReadingMode(preferences: prefs)
     }
 
-    public func setReadingMode(_ mode: ReadingMode) async throws {
+    func setReadingMode(_ mode: ReadingMode) async throws {
         var prefs = await reader.currentPreferences()
         prefs.readingMode = mode
         try await setPreferences(prefs)
     }
 
-    public func setTheme(_ theme: Theme) async throws {
+    func setTheme(_ theme: Theme) async throws {
         var prefs = await reader.currentPreferences()
         prefs.theme = theme
         try await setPreferences(prefs)
     }
 
-    public func setTypography(_ typography: Typography) async throws {
+    func setTypography(_ typography: Typography) async throws {
         var prefs = await reader.currentPreferences()
         prefs.typography = typography
         try await setPreferences(prefs)
     }
 
-    public func accessibility() -> ReaderAccessibilitySettings {
+    func accessibility() -> ReaderAccessibilitySettings {
         accessibilitySettings
     }
 
-    public func setAccessibility(_ settings: ReaderAccessibilitySettings) async throws {
+    func setAccessibility(_ settings: ReaderAccessibilitySettings) async throws {
         accessibilitySettings = settings
         eventHub.yield(.accessibilityChanged(settings))
 
@@ -357,7 +380,7 @@ public final class ContentRenderer: Navigator {
         eventHub.yield(.readingModeChanged(effectiveReadingMode(preferences: prefs)))
     }
 
-    public func callBridgeCommand(
+    func callBridgeCommand(
         _ name: String,
         payload: BridgeValue = .null
     ) async throws -> BridgeValue {
@@ -367,7 +390,7 @@ public final class ContentRenderer: Navigator {
         return try await reflowLayout.callBridgeCommand(name, payload: payload)
     }
 
-    public func setDecorations(_ decorations: [Decoration], in group: DecorationGroup) async throws {
+    func setDecorations(_ decorations: [Decoration], in group: DecorationGroup) async throws {
         decorationsByGroup[group] = decorations.map { decoration in
             var normalized = decoration
             if normalized.style == DecorationStyle() {
@@ -378,7 +401,7 @@ public final class ContentRenderer: Navigator {
         try await applyDecorationsForCurrentChapter()
     }
 
-    public func clearDecorations(in group: DecorationGroup? = nil) async throws {
+    func clearDecorations(in group: DecorationGroup? = nil) async throws {
         if let group {
             decorationsByGroup[group] = []
         } else {
@@ -387,16 +410,16 @@ public final class ContentRenderer: Navigator {
         try await applyDecorationsForCurrentChapter()
     }
 
-    public func decorations(in group: DecorationGroup) -> [Decoration] {
+    func decorations(in group: DecorationGroup) -> [Decoration] {
         decorationsByGroup[group] ?? []
     }
 
-    public func lastDecorationTap() -> DecorationTapEvent? {
+    func lastDecorationTap() -> DecorationTapEvent? {
         lastDecorationTapEvent
     }
 
     @discardableResult
-    public func handleLink(_ url: URL, context: LinkContext) async throws -> LinkAction {
+    func handleLink(_ url: URL, context: LinkContext) async throws -> LinkAction {
         let action = await linkPolicy.action(for: url, context: context)
         let kind = ResolveLinks.classify(url)
         eventHub.yield(.linkActivated(url: url, kind: kind, action: action))
@@ -441,7 +464,7 @@ public final class ContentRenderer: Navigator {
     /// Applies the configured link policy and navigation behavior to a link from
     /// a CBZ, fixed-layout EPUB, image-only EPUB, or DjVu page.
     @discardableResult
-    public func handlePageLink(
+    func handlePageLink(
         _ link: PageLink,
         onPageAt pageIndex: Int
     ) async throws -> LinkAction {
@@ -828,12 +851,6 @@ public final class ContentRenderer: Navigator {
         var chapter = book.readingOrder[index]
         chapter.content = inlineAssetReferences(in: chapter.content)
         return chapter
-    }
-
-    private static func isBitmapPublication(_ book: Book) -> Bool {
-        !book.readingOrder.isEmpty && book.readingOrder.allSatisfy { chapter in
-            chapter.resourceID != nil && chapter.mediaType?.lowercased().hasPrefix("image/") == true
-        }
     }
 
     private func inlineAssetReferences(in html: String) -> String {

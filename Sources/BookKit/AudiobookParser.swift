@@ -1,6 +1,6 @@
 import Foundation
 
-public struct AudiobookParser: BookParser {
+struct AudiobookParser: BookParser {
     public let formats: Set<BookFormat> = [.audiobook]
 
     public init() {}

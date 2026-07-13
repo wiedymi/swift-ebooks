@@ -1,6 +1,6 @@
 import Foundation
 
-public enum AudiobookEngineEvent: Sendable, Equatable {
+enum AudiobookEngineEvent: Sendable, Equatable {
     case ready(duration: Double?)
     case timeChanged(Double)
     case playingChanged(Bool)
@@ -9,7 +9,7 @@ public enum AudiobookEngineEvent: Sendable, Equatable {
 }
 
 @MainActor
-public protocol AudiobookPlaybackEngine: AnyObject {
+protocol AudiobookPlaybackEngine: AnyObject {
     var events: AsyncStream<AudiobookEngineEvent> { get }
     var duration: Double? { get }
     var isPlaying: Bool { get }
@@ -22,7 +22,7 @@ public protocol AudiobookPlaybackEngine: AnyObject {
     func shutdown()
 }
 
-public extension AudiobookPlaybackEngine {
+extension AudiobookPlaybackEngine {
     func shutdown() {}
 }
 
@@ -30,7 +30,7 @@ public extension AudiobookPlaybackEngine {
 import AVFoundation
 
 @MainActor
-public final class AVFoundationAudiobookEngine: AudiobookPlaybackEngine {
+final class AVFoundationAudiobookEngine: AudiobookPlaybackEngine {
     public var events: AsyncStream<AudiobookEngineEvent> {
         eventHub.stream()
     }

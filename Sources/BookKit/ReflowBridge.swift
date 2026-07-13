@@ -1,6 +1,6 @@
 import Foundation
 
-public enum ReflowBridgeEvent: Sendable, Equatable {
+enum ReflowBridgeEvent: Sendable, Equatable {
     case ready
     case paginationChanged(pageCount: Int, chapterProgressMap: [Int: [Double]])
     case positionChanged(spineIndex: Int, progression: Double, cfi: String?, anchor: String?)
@@ -12,7 +12,7 @@ public enum ReflowBridgeEvent: Sendable, Equatable {
 }
 
 @MainActor
-public protocol ReflowBridge: AnyObject {
+protocol ReflowBridge: AnyObject {
     var events: AsyncStream<ReflowBridgeEvent> { get }
 
     func setContent(html: String, css: String, viewport: Viewport) async throws
@@ -29,7 +29,7 @@ public protocol ReflowBridge: AnyObject {
     func measurePages() async throws
 }
 
-public extension ReflowBridge {
+extension ReflowBridge {
     func setAccessibility(_: ReaderAccessibilitySettings) async throws {}
     func setPublicationLayout(_: PublicationLayout) async throws {}
     func setNetworkAccessAllowed(_: Bool) async throws {}
@@ -39,7 +39,7 @@ public extension ReflowBridge {
     }
 }
 
-public enum BridgeMessageValidator {
+enum BridgeMessageValidator {
     public static func decode(body: Any) -> ReflowBridgeEvent? {
         guard let dict = body as? [String: Any],
               let type = dict["type"] as? String

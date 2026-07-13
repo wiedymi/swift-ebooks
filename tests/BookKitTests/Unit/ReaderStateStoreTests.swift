@@ -6,11 +6,11 @@ final class ReaderStateStoreTests: XCTestCase {
         let book = makeBook(id: "book-memory")
         let store = InMemoryReaderStateStore()
 
-        let reader1 = Reader(book: book, stateStore: store)
+        let reader1 = ReaderStateActor(book: book, stateStore: store)
         try await reader1.go(to: Position(spineIndex: 1, progression: 0.42))
         _ = try await reader1.addBookmark(note: "Checkpoint")
 
-        let reader2 = Reader(book: book, stateStore: store)
+        let reader2 = ReaderStateActor(book: book, stateStore: store)
         try await reader2.restore()
 
         let restoredPosition = await reader2.position
@@ -26,7 +26,7 @@ final class ReaderStateStoreTests: XCTestCase {
     func testReaderBookmarkCRUDPersists() async throws {
         let book = makeBook(id: "book-crud")
         let store = InMemoryReaderStateStore()
-        let reader = Reader(book: book, stateStore: store)
+        let reader = ReaderStateActor(book: book, stateStore: store)
 
         let bookmark1 = try await reader.addBookmark(note: "First")
         let bookmark2 = try await reader.addBookmark(note: "Second")
@@ -73,7 +73,7 @@ final class ReaderStateStoreTests: XCTestCase {
     func testNextPagePersistsWhenStayingInSameChapter() async throws {
         let book = makeBook(id: "book-page-persist")
         let store = InMemoryReaderStateStore()
-        let reader = Reader(book: book, pageCharacterCount: 10, stateStore: store)
+        let reader = ReaderStateActor(book: book, pageCharacterCount: 10, stateStore: store)
 
         try await reader.nextPage()
 
@@ -85,7 +85,7 @@ final class ReaderStateStoreTests: XCTestCase {
     func testReaderPreferencesPersistInSnapshot() async throws {
         let book = makeBook(id: "book-preferences")
         let store = InMemoryReaderStateStore()
-        let reader = Reader(book: book, stateStore: store)
+        let reader = ReaderStateActor(book: book, stateStore: store)
 
         try await reader.setPreferences(
             ReaderPreferences(

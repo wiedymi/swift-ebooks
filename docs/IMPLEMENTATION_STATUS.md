@@ -1,6 +1,6 @@
 # BookKit implementation status
 
-Date: 2026-07-10
+Date: 2026-07-13
 
 This is the source of truth for implemented behavior. An `Implemented` entry is
 backed by automated tests; it is not a claim that every producer-specific file is
@@ -10,13 +10,15 @@ compatible.
 
 | Area | Status | Evidence-backed behavior |
 | --- | --- | --- |
+| Unified reader session | Implemented | `BookReader` selects the engine, restores one shared state owner, exposes observable navigation/playback state, and owns lifecycle for every supported format. |
+| Unified SwiftUI surface | Implemented | `BookReaderView` presents reflow, fixed-image, PDF, and audiobook publications without host format branching or bridge/view callback wiring. |
 | Normalized publication model | Implemented | Reflowable, fixed-page, PDF, and timed-audio publications share `Book`, `Chapter`, `Asset`, `TOCNode`, `Position`, and `Locator`. |
 | Live position | Implemented | Reflow scroll events, fixed-page visibility, PDF page notifications, and audiobook time events can update host UI without polling. Audiobook book progress is duration weighted. |
 | Page movement | Implemented | Measured WebKit pages cross sections; PDF/fixed pages use section indexes; audiobook navigation changes tracks. |
 | TOC, landmarks, and page lists | Implemented | Hierarchies remain nested. Relative EPUB paths, PDF custom-scheme pages, DjVu targets, and audiobook media fragments resolve to locators. |
-| Internal and external links | Implemented | Reflow and fixed-page links route through `ContentRenderer`; external URL annotations in `PDFBookView` are intercepted. `LinkPolicy` decides follow/open/block. |
+| Internal and external links | Implemented | `BookReaderView` routes reflow, fixed-page, and PDF links through the session. `LinkPolicy` decides follow/open/block. |
 | Fixed-page customization | Implemented | `FixedPageBookView` exposes fitted geometry, link bounds, accessible hit targets, visibility locators, and an arbitrary host overlay builder. |
-| Events | Implemented | Independent buffered streams expose readiness, locators, pagination, selections, content height, history, preferences, accessibility, links, decorations, plug-in messages, and errors. |
+| Events | Implemented | `BookReaderEvent` independently broadcasts navigation, presentation, links, decorations, plug-ins, playback, and errors while published properties expose current state. |
 | Persistence | Implemented | Stable IDs, positions/timestamps, preferences, bookmarks, and file/in-memory stores are covered. |
 | Search | Implemented | In-memory first-match-per-section search over normalized content, including DjVu OCR text. |
 | Canonical EPUB CFI generation | Not implemented | CFI values supplied by an integration are retained. Anchors, progression, text context, and timestamps are BookKit's built-in location mechanisms. |
@@ -37,9 +39,13 @@ compatible.
 | Markdown | Headings/nested TOC, paragraphs, lists, links, emphasis, quotes, fenced/inline code, and safe HTML output. | It is a focused reader adapter, not a CommonMark conformance claim or Markdown authoring system. |
 | Audiobook | W3C/Readium manifests, root-manifest ZIP packages, standalone MP3/M4A/M4B/AAC, metadata/artwork/chapters, media fragments, AVFoundation playback, rates, persistence, bookmarks, Now Playing, and remote commands. | Protected audio is rejected. Remote manifest tracks require explicit `allowsNetwork` and are rejected on visionOS because protected-content status cannot be verified there; advanced streaming/download management is host-owned. |
 
-## Fixed-page and audiobook surfaces
+## Unified and advanced presentation surfaces
 
-Implemented fixed-page types:
+The primary surface is `BookReaderView(reader:)`. It internally selects and
+synchronizes all presentation engines. The following types remain advanced
+customization and focused-test surfaces.
+
+Fixed-page types:
 
 - `FixedPageAdapter` for page/position/asset/spread mapping;
 - `FixedPageBookView` for presentation, accessible links, live visibility, and
@@ -48,7 +54,7 @@ Implemented fixed-page types:
 - `ImagePageStore` for bounded PNG thumbnails and concurrent neighboring-page
   prefetch.
 
-Implemented audiobook types:
+Audiobook types:
 
 - `AudiobookTimeline` for track, timestamp, and total-duration mapping;
 - `AudiobookPlayer` for state, events, seeking, rates, bookmarks, and remote

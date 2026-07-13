@@ -1,15 +1,15 @@
 import Foundation
 
-public actor Reader {
+actor ReaderStateActor {
     private let book: Book
     private let pageCharacterCount: Int
     private let stateStore: (any ReaderStateStore)?
 
-    public private(set) var position: Position
-    public private(set) var bookmarks: [ReadingBookmark]
+    private(set) var position: Position
+    private(set) var bookmarks: [ReadingBookmark]
     private var preferences: ReaderPreferences
 
-    public init(
+    init(
         book: Book,
         pageCharacterCount: Int = 1200,
         stateStore: (any ReaderStateStore)? = nil,
@@ -23,7 +23,7 @@ public actor Reader {
         self.preferences = preferences
     }
 
-    public func restore() async throws {
+    func restore() async throws {
         guard let stateStore else {
             return
         }
@@ -43,12 +43,12 @@ public actor Reader {
         preferences = snapshot.preferences
     }
 
-    public func go(to position: Position) async throws {
+    func go(to position: Position) async throws {
         self.position = Self.clamp(position: position, chapterCount: book.readingOrder.count)
         try await persist()
     }
 
-    public func nextPage() async throws {
+    func nextPage() async throws {
         guard !book.readingOrder.isEmpty else {
             return
         }
@@ -76,7 +76,7 @@ public actor Reader {
         try await persist()
     }
 
-    public func previousPage() async throws {
+    func previousPage() async throws {
         guard !book.readingOrder.isEmpty else {
             return
         }
@@ -104,7 +104,7 @@ public actor Reader {
         try await persist()
     }
 
-    public func addBookmark(note: String? = nil) async throws -> ReadingBookmark {
+    func addBookmark(note: String? = nil) async throws -> ReadingBookmark {
         let bookmark = ReadingBookmark(position: position, note: note)
         bookmarks.append(bookmark)
         bookmarks.sort { $0.createdAt < $1.createdAt }
@@ -112,7 +112,7 @@ public actor Reader {
         return bookmark
     }
 
-    public func updateBookmark(id: UUID, note: String?) async throws {
+    func updateBookmark(id: UUID, note: String?) async throws {
         guard let index = bookmarks.firstIndex(where: { $0.id == id }) else {
             return
         }
@@ -120,29 +120,29 @@ public actor Reader {
         try await persist()
     }
 
-    public func removeBookmark(id: UUID) async throws {
+    func removeBookmark(id: UUID) async throws {
         bookmarks.removeAll { $0.id == id }
         try await persist()
     }
 
-    public func bookmark(id: UUID) -> ReadingBookmark? {
+    func bookmark(id: UUID) -> ReadingBookmark? {
         bookmarks.first { $0.id == id }
     }
 
-    public func bookmarksList() -> [ReadingBookmark] {
+    func bookmarksList() -> [ReadingBookmark] {
         bookmarks
     }
 
-    public func setPreferences(_ preferences: ReaderPreferences) async throws {
+    func setPreferences(_ preferences: ReaderPreferences) async throws {
         self.preferences = preferences
         try await persist()
     }
 
-    public func currentPreferences() -> ReaderPreferences {
+    func currentPreferences() -> ReaderPreferences {
         preferences
     }
 
-    public func sync(to position: Position) {
+    func sync(to position: Position) {
         self.position = Self.clamp(position: position, chapterCount: book.readingOrder.count)
     }
 

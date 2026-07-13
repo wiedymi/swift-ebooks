@@ -1,6 +1,6 @@
 import Foundation
 
-public struct MOBIParser: BookParser {
+struct MOBIParser: BookParser {
     public let formats: Set<BookFormat> = [.mobi]
 
     public init() {}
@@ -10,7 +10,7 @@ public struct MOBIParser: BookParser {
     }
 }
 
-public struct AZW3Parser: BookParser {
+struct AZW3Parser: BookParser {
     public let formats: Set<BookFormat> = [.azw3]
 
     public init() {}

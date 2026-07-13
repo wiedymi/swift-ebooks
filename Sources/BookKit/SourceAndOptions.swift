@@ -46,10 +46,16 @@ public struct OpenOptions: Sendable {
     }
 }
 
+/// The bytes or location used to open a publication.
 public enum BookSource: Sendable {
+    /// A local file or remote URL.
     case url(URL)
+
+    /// In-memory publication data and an optional format-bearing file name.
     case data(Data, fileName: String?)
-    case stream(fileName: String?, provider: @Sendable () throws -> Data)
+
+    /// Lazily supplied publication data and an optional format-bearing file name.
+    case dataProvider(fileName: String?, provider: @Sendable () throws -> Data)
 
     var fileName: String? {
         switch self {
@@ -57,7 +63,7 @@ public enum BookSource: Sendable {
             return url.lastPathComponent
         case let .data(_, fileName):
             return fileName
-        case let .stream(fileName, _):
+        case let .dataProvider(fileName, _):
             return fileName
         }
     }
@@ -67,7 +73,7 @@ public enum BookSource: Sendable {
         switch self {
         case let .data(payload, _):
             data = payload
-        case let .stream(_, provider):
+        case let .dataProvider(_, provider):
             data = try provider()
         case let .url(url):
             if let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" {

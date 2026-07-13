@@ -459,7 +459,7 @@ final class ContentRendererTests: XCTestCase {
             diagnostics: []
         )
 
-        let seedReader = Reader(book: book, stateStore: store)
+        let seedReader = ReaderStateActor(book: book, stateStore: store)
         try await seedReader.go(to: Position(spineIndex: 0, progression: 0.6))
         _ = try await seedReader.addBookmark(note: "Saved")
 

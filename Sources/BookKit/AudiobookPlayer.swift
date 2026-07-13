@@ -4,23 +4,35 @@ import Foundation
 import MediaPlayer
 #endif
 
+/// The lifecycle state of an audiobook playback session.
 public enum AudiobookPlaybackStatus: String, Sendable, Equatable, Hashable, Codable {
+    /// No audiobook has been prepared.
     case idle
+
+    /// Playback is prepared and waiting to start.
     case ready
+
+    /// Audio is currently playing.
     case playing
+
+    /// Playback is paused.
     case paused
+
+    /// Playback reached the end of the audiobook.
     case ended
+
+    /// Playback stopped because of an error.
     case failed
 }
 
-public struct AudiobookPlaybackSnapshot: Sendable, Equatable {
-    public var status: AudiobookPlaybackStatus
-    public var position: Position
-    public var rate: Float
-    public var trackDuration: Double?
-    public var totalProgression: Double
+struct AudiobookPlaybackSnapshot: Sendable, Equatable {
+    var status: AudiobookPlaybackStatus
+    var position: Position
+    var rate: Float
+    var trackDuration: Double?
+    var totalProgression: Double
 
-    public init(
+    init(
         status: AudiobookPlaybackStatus,
         position: Position,
         rate: Float,
@@ -35,7 +47,7 @@ public struct AudiobookPlaybackSnapshot: Sendable, Equatable {
     }
 }
 
-public enum AudiobookPlaybackEvent: Sendable, Equatable {
+enum AudiobookPlaybackEvent: Sendable, Equatable {
     case ready(AudiobookPlaybackSnapshot)
     case stateChanged(AudiobookPlaybackSnapshot)
     case positionChanged(AudiobookPlaybackSnapshot)
@@ -45,14 +57,14 @@ public enum AudiobookPlaybackEvent: Sendable, Equatable {
 }
 
 @MainActor
-public final class AudiobookPlayer {
-    public let book: Book
-    public var events: AsyncStream<AudiobookPlaybackEvent> {
+final class AudiobookPlayer {
+    let book: Book
+    var events: AsyncStream<AudiobookPlaybackEvent> {
         eventHub.stream()
     }
 
     private let timeline: AudiobookTimeline
-    private let reader: Reader
+    private let reader: ReaderStateActor
     private let resourceStore: AudioResourceStore
     private let engine: any AudiobookPlaybackEngine
     private let eventHub = EventHub<AudiobookPlaybackEvent>()
@@ -66,15 +78,29 @@ public final class AudiobookPlayer {
     private var remoteCommandTargets: [(command: MPRemoteCommand, token: Any)] = []
     #endif
 
-    public init(
+    convenience init(
         book: Book,
         options: OpenOptions = OpenOptions(),
         stateStore: (any ReaderStateStore)? = nil,
         engine: (any AudiobookPlaybackEngine)? = nil
     ) throws {
+        try self.init(
+            book: book,
+            options: options,
+            reader: ReaderStateActor(book: book, stateStore: stateStore),
+            engine: engine
+        )
+    }
+
+    init(
+        book: Book,
+        options: OpenOptions,
+        reader: ReaderStateActor,
+        engine: (any AudiobookPlaybackEngine)? = nil
+    ) throws {
         timeline = try AudiobookTimeline(book: book)
         self.book = book
-        reader = Reader(book: book, stateStore: stateStore)
+        self.reader = reader
         resourceStore = AudioResourceStore(book: book, options: options)
         if let engine {
             self.engine = engine
@@ -92,7 +118,7 @@ public final class AudiobookPlayer {
         engineEventTask?.cancel()
     }
 
-    public func prepare() async throws {
+    func prepare() async throws {
         guard !isPrepared else { return }
         try await reader.restore()
         let restored = await reader.position
@@ -105,21 +131,21 @@ public final class AudiobookPlayer {
         updateNowPlaying(snapshot)
     }
 
-    public func play() async throws {
+    func play() async throws {
         try await prepare()
         engine.play(rate: playbackRate)
         status = .playing
         emitStateChanged()
     }
 
-    public func pause() async throws {
+    func pause() async throws {
         engine.pause()
         status = .paused
         try await persistCurrentPosition()
         emitStateChanged()
     }
 
-    public func seek(to target: Position) async throws {
+    func seek(to target: Position) async throws {
         try await prepare()
         let destination = normalized(target)
         let changesTrack = destination.spineIndex != position.spineIndex
@@ -135,18 +161,18 @@ public final class AudiobookPlayer {
         emitPositionChanged()
     }
 
-    public func seek(toTimestamp timestamp: Double) async throws {
+    func seek(toTimestamp timestamp: Double) async throws {
         try await seek(to: timeline.position(trackIndex: position.spineIndex, timestamp: timestamp))
     }
 
-    public func nextTrack() async throws -> Bool {
+    func nextTrack() async throws -> Bool {
         try await prepare()
         guard let next = timeline.nextTrack(from: position) else { return false }
         try await seek(to: next)
         return true
     }
 
-    public func previousTrack(restartsAfter seconds: Double = 5) async throws -> Bool {
+    func previousTrack(restartsAfter seconds: Double = 5) async throws -> Bool {
         try await prepare()
         let start = timeline.startPosition(ofTrackAt: position.spineIndex)
         if (position.timestamp ?? 0) - (start.timestamp ?? 0) > max(seconds, 0) {
@@ -161,7 +187,7 @@ public final class AudiobookPlayer {
         return true
     }
 
-    public func setRate(_ rate: Float) {
+    func setRate(_ rate: Float) {
         playbackRate = min(max(rate, 0.5), 3)
         if engine.isPlaying {
             engine.play(rate: playbackRate)
@@ -169,32 +195,32 @@ public final class AudiobookPlayer {
         emitStateChanged()
     }
 
-    public func currentSnapshot() -> AudiobookPlaybackSnapshot {
+    func currentSnapshot() -> AudiobookPlaybackSnapshot {
         snapshot()
     }
 
-    public func currentPosition() -> Position {
+    func currentPosition() -> Position {
         position
     }
 
-    public func addBookmark(note: String? = nil) async throws -> ReadingBookmark {
+    func addBookmark(note: String? = nil) async throws -> ReadingBookmark {
         await reader.sync(to: position)
         return try await reader.addBookmark(note: note)
     }
 
-    public func bookmarks() async -> [ReadingBookmark] {
+    func bookmarks() async -> [ReadingBookmark] {
         await reader.bookmarksList()
     }
 
-    public func updateBookmark(id: UUID, note: String?) async throws {
+    func updateBookmark(id: UUID, note: String?) async throws {
         try await reader.updateBookmark(id: id, note: note)
     }
 
-    public func removeBookmark(id: UUID) async throws {
+    func removeBookmark(id: UUID) async throws {
         try await reader.removeBookmark(id: id)
     }
 
-    public func activateRemoteCommands(skipInterval: Double = 15) {
+    func activateRemoteCommands(skipInterval: Double = 15) {
         #if canImport(MediaPlayer)
         deactivateRemoteCommands()
         let center = MPRemoteCommandCenter.shared()
@@ -249,7 +275,7 @@ public final class AudiobookPlayer {
         #endif
     }
 
-    public func deactivateRemoteCommands() {
+    func deactivateRemoteCommands() {
         #if canImport(MediaPlayer)
         for target in remoteCommandTargets {
             target.command.removeTarget(target.token)
@@ -258,7 +284,7 @@ public final class AudiobookPlayer {
         #endif
     }
 
-    public func shutdown(removesTemporaryAudio: Bool = true) async {
+    func shutdown(removesTemporaryAudio: Bool = true) async {
         engine.pause()
         try? await persistCurrentPosition()
         engine.shutdown()

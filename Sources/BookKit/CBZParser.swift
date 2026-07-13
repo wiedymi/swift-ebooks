@@ -1,6 +1,6 @@
 import Foundation
 
-public struct CBZParser: BookParser {
+struct CBZParser: BookParser {
     public let formats: Set<BookFormat> = [.cbz]
 
     public init() {}

@@ -1,6 +1,6 @@
 import Foundation
 
-public struct TextDocumentParser: BookParser {
+struct TextDocumentParser: BookParser {
     public let formats: Set<BookFormat> = [.text, .html, .markdown]
 
     public init() {}

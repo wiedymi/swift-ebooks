@@ -45,9 +45,9 @@ final class OpenOptionsAndPolicyTests: XCTestCase {
         XCTAssertEqual(text, "hello")
     }
 
-    func testBookSourceStreamProviderLoadsData() throws {
+    func testBookSourceDataProviderLoadsData() throws {
         let payload = Data([1, 2, 3, 4, 5])
-        let source = BookSource.stream(fileName: "sample.epub") {
+        let source = BookSource.dataProvider(fileName: "sample.epub") {
             payload
         }
 

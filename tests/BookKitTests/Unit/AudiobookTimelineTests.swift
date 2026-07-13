@@ -29,10 +29,10 @@ final class AudiobookTimelineTests: XCTestCase {
     func testReaderPersistencePreservesTimestamp() async throws {
         let book = makeBook()
         let store = InMemoryReaderStateStore()
-        let writer = Reader(book: book, stateStore: store)
+        let writer = ReaderStateActor(book: book, stateStore: store)
         try await writer.go(to: Position(spineIndex: 1, progression: 0.25, timestamp: 5))
 
-        let reader = Reader(book: book, stateStore: store)
+        let reader = ReaderStateActor(book: book, stateStore: store)
         try await reader.restore()
         let restored = await reader.position
         XCTAssertEqual(restored.spineIndex, 1)

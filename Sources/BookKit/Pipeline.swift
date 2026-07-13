@@ -1,6 +1,6 @@
 import Foundation
 
-public enum SanitizeContent {
+enum SanitizeContent {
     public static func run(_ htmlOrText: String, allowsNetwork: Bool = false) -> String {
         var output = htmlOrText
 
@@ -112,7 +112,7 @@ public enum SanitizeContent {
     }
 }
 
-public enum ResolveStyles {
+enum ResolveStyles {
     public static func run(baseCSS: String, theme: Theme, typography: Typography) -> String {
         let css = """
         :root {
@@ -139,7 +139,7 @@ public enum ResolveStyles {
     }
 }
 
-public enum ResolveLinks {
+enum ResolveLinks {
     public static func classify(_ url: URL) -> LinkKind {
         if let scheme = url.scheme?.lowercased() {
             switch scheme {
@@ -174,7 +174,7 @@ public enum ResolveLinks {
     }
 }
 
-public enum Normalize {
+enum Normalize {
     public static func run(_ book: Book, allowsNetwork: Bool = false) -> Book {
         var normalized = book
 

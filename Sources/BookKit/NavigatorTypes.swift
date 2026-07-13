@@ -213,7 +213,7 @@ public struct ReaderSelection: Sendable, Equatable {
     }
 }
 
-public enum NavigatorEvent: Sendable, Equatable {
+enum NavigatorEvent: Sendable, Equatable {
     case ready
     case locatorChanged(Locator)
     case paginationChanged(PageMap)
@@ -230,7 +230,7 @@ public enum NavigatorEvent: Sendable, Equatable {
 }
 
 @MainActor
-public protocol Navigator: AnyObject {
+protocol Navigator: AnyObject {
     var events: AsyncStream<NavigatorEvent> { get }
 
     func currentLocator() async -> Locator

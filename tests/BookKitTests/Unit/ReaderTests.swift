@@ -21,7 +21,7 @@ final class ReaderTests: XCTestCase {
             diagnostics: []
         )
 
-        let reader = Reader(book: book, pageCharacterCount: 500)
+        let reader = ReaderStateActor(book: book, pageCharacterCount: 500)
 
         let start = await reader.position
         XCTAssertEqual(start.spineIndex, 0)
@@ -60,7 +60,7 @@ final class ReaderTests: XCTestCase {
             diagnostics: []
         )
 
-        let reader = Reader(book: book, pageCharacterCount: 10)
+        let reader = ReaderStateActor(book: book, pageCharacterCount: 10)
         try await reader.go(to: Position(spineIndex: 999, progression: 9.0))
 
         let pos = await reader.position

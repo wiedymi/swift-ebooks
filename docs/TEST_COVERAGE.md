@@ -52,6 +52,9 @@ Deterministic tests verify:
 
 ## Reader and navigation coverage
 
+- unified `BookReader` engine selection and observable state;
+- `BookReaderView` construction for reflow, fixed-page, PDF, and audio sessions;
+- shared persistence ownership between audiobook navigation and playback;
 - position/locator/page-map conversion;
 - duration-weighted audiobook progress and timed TOC fragments;
 - TOC activation for relative EPUB paths and PDF custom-scheme hrefs;
