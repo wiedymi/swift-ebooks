@@ -150,11 +150,12 @@ final class WebViewReflowBridge: NSObject, ReflowBridge, WKScriptMessageHandler,
 
           style.textContent = css;
           document.body.innerHTML = html;
+          window.BookKitNativeClearSelection?.();
           document.body.style.margin = '0';
           document.body.style.padding = '0';
           document.documentElement.style.setProperty('--bookkit-viewport-width', '\(viewport.width)px');
           document.documentElement.style.setProperty('--bookkit-viewport-height', '\(viewport.height)px');
-          window.scrollTo(0, 0);
+          window.BookKitNativeScrollTo(0, 0);
           if (window.BookKitNativeApplyReadingMode) window.BookKitNativeApplyReadingMode();
           if (window.BookKitNativeApplyAccessibility) window.BookKitNativeApplyAccessibility();
           if (window.BookKitNativeApplyDecorations) window.BookKitNativeApplyDecorations(window.__bookkitDecorations || []);
@@ -168,12 +169,32 @@ final class WebViewReflowBridge: NSObject, ReflowBridge, WKScriptMessageHandler,
         try await evaluateJavaScript(js)
     }
 
+    public func goToText(_ range: ReaderTextRange) async throws -> Double? {
+        try await waitForDocumentReady()
+        let value = try await webView.evaluateJavaScript(
+            "window.BookKitNativeGoToText(\(Self.jsJSON(range)))", in: nil, contentWorld: .defaultClient
+        )
+        return (value as? [String: Any])?["progression"] as? Double
+    }
+
+    public func capturePosition() async throws -> Position? {
+        guard webView.window != nil, webView.bounds.width > 1, webView.bounds.height > 1 else { return nil }
+        try await waitForDocumentReady()
+        guard let value = try await webView.evaluateJavaScript("window.BookKitNativePosition()", in: nil, contentWorld: .defaultClient) as? [String: Any],
+              let progression = value["progression"] as? Double, progression.isFinite else { return nil }
+        return Position(spineIndex: 0, progression: progression, fragment: value["anchor"] as? String)
+    }
+
+    public func clearSelection() async throws {
+        try await evaluateJavaScript("window.BookKitNativeClearSelection()")
+    }
+
     public func goToAnchor(_ id: String) async throws {
         let js = """
         (() => {
           const target = document.getElementById(\(Self.jsString(id)));
           if (target) {
-            target.scrollIntoView();
+            window.BookKitNativeScrollIntoView(target);
           }
           if (window.BookKitNativeReportPosition) window.BookKitNativeReportPosition(true);
         })();
@@ -213,6 +234,13 @@ final class WebViewReflowBridge: NSObject, ReflowBridge, WKScriptMessageHandler,
           document.documentElement.style.setProperty('--bookkit-bg', \(Self.jsString(theme.backgroundColor)));
           document.documentElement.style.setProperty('--bookkit-fg', \(Self.jsString(theme.textColor)));
           document.documentElement.style.setProperty('--bookkit-link', \(Self.jsString(theme.linkColor)));
+          let custom = document.getElementById('bookkit-theme-style');
+          if (!custom) {
+            custom = document.createElement('style');
+            custom.id = 'bookkit-theme-style';
+            document.head.appendChild(custom);
+          }
+          custom.textContent = \(Self.jsString(SanitizeContent.css(theme.customCSS, allowsNetwork: allowsNetwork)));
         })();
         """
         try await evaluateJavaScript(js)
@@ -446,6 +474,15 @@ final class WebViewReflowBridge: NSObject, ReflowBridge, WKScriptMessageHandler,
       const isFixedLayout = () => window.__bookkitPublicationLayout === 'fixed';
       const clamp = value => Math.max(0, Math.min(1, value));
 
+      const scrollImmediately = action => {
+        const root = document.documentElement;
+        const previous = root.style.scrollBehavior;
+        root.style.scrollBehavior = 'auto';
+        try { action(); } finally { root.style.scrollBehavior = previous; }
+      };
+      window.BookKitNativeScrollTo = (x, y) => scrollImmediately(() => window.scrollTo(x, y));
+      window.BookKitNativeScrollIntoView = target => scrollImmediately(() => target.scrollIntoView());
+
       window.BookKitNativeApplyReadingMode = () => {
         const root = document.documentElement;
         const body = document.body;
@@ -565,6 +602,7 @@ final class WebViewReflowBridge: NSObject, ReflowBridge, WKScriptMessageHandler,
         return null;
       };
 
+      window.BookKitNativePosition = () => ({ progression: computeProgression(), anchor: visibleAnchor() });
       let lastAnnouncedPercent = -100;
       let lastAnnouncedAnchor = null;
       let lastReportedProgression = -1;
@@ -608,14 +646,12 @@ final class WebViewReflowBridge: NSObject, ReflowBridge, WKScriptMessageHandler,
           const width = Math.max(document.documentElement.scrollWidth || 0, document.body ? document.body.scrollWidth || 0 : 0);
           const viewportWidth = Math.max(window.innerWidth || 1, 1);
           const maxScroll = Math.max(width - viewportWidth, 1);
-          window.scrollTo(maxScroll * clamped, 0);
-          if (scrollingElement) scrollingElement.scrollLeft = maxScroll * clamped;
+          window.BookKitNativeScrollTo(maxScroll * clamped, 0);
         } else {
           const height = Math.max(document.documentElement.scrollHeight || 0, document.body ? document.body.scrollHeight || 0 : 0);
           const viewportHeight = Math.max(window.innerHeight || 1, 1);
           const maxScroll = Math.max(height - viewportHeight, 1);
-          window.scrollTo(0, maxScroll * clamped);
-          if (scrollingElement) scrollingElement.scrollTop = maxScroll * clamped;
+          window.BookKitNativeScrollTo(0, maxScroll * clamped);
         }
       };
 
@@ -649,41 +685,9 @@ final class WebViewReflowBridge: NSObject, ReflowBridge, WKScriptMessageHandler,
         window.BookKitNativeReportPosition();
       };
 
-      const clearDecorations = () => {
-        document.querySelectorAll('[data-bookkit-decoration-id]').forEach(element => {
-          element.removeAttribute('data-bookkit-decoration-id');
-          element.removeAttribute('data-bookkit-decoration-group');
-          element.style.removeProperty('background-color');
-          element.style.removeProperty('color');
-          element.style.removeProperty('text-decoration');
-          element.style.removeProperty('text-decoration-color');
-          element.style.removeProperty('cursor');
-        });
-      };
-
+      \(WebViewReflowBridge.textSupportScript)
       window.BookKitNativeApplyDecorations = decorations => {
-        clearDecorations();
-        const list = Array.isArray(decorations) ? decorations : [];
-        for (const decoration of list) {
-          if (!decoration || !decoration.id) continue;
-          const locator = decoration.locator || {};
-          const anchor = locator.anchor;
-          if (!anchor) continue;
-          const target = document.getElementById(anchor);
-          if (!target) continue;
-
-          target.setAttribute('data-bookkit-decoration-id', String(decoration.id));
-          target.setAttribute('data-bookkit-decoration-group', String(decoration.group || 'highlight'));
-
-          const style = decoration.style || {};
-          if (style.backgroundColor) target.style.setProperty('background-color', style.backgroundColor);
-          if (style.textColor) target.style.setProperty('color', style.textColor);
-          if (style.underlineColor) {
-            target.style.setProperty('text-decoration', 'underline');
-            target.style.setProperty('text-decoration-color', style.underlineColor);
-          }
-          target.style.setProperty('cursor', 'pointer');
-        }
+        window.BookKitNativeApplyTextDecorations(Array.isArray(decorations) ? decorations : []);
       };
 
       let positionAnimationFrame = 0;
@@ -702,33 +706,10 @@ final class WebViewReflowBridge: NSObject, ReflowBridge, WKScriptMessageHandler,
         window.BookKitNativeMeasurePages();
       });
 
-      document.addEventListener('selectionchange', () => {
-        const selection = window.getSelection ? window.getSelection() : null;
-        if (!selection || selection.rangeCount === 0) return;
-        const text = (selection.toString() || '').trim();
-        if (!text) return;
-        const range = selection.getRangeAt(0);
-        post({
-          type: 'selectionChanged',
-          start: range.startOffset || 0,
-          end: range.endOffset || 0,
-          text
-        });
-        window.BookKitNativeEmitHook('selectionChanged', {
-          start: range.startOffset || 0,
-          end: range.endOffset || 0,
-          text
-        });
-      });
-
       document.addEventListener('click', event => {
-        const decorated = event.target && event.target.closest ? event.target.closest('[data-bookkit-decoration-id]') : null;
-        if (decorated) {
-          post({
-            type: 'decorationTapped',
-            id: decorated.getAttribute('data-bookkit-decoration-id') || '',
-            group: decorated.getAttribute('data-bookkit-decoration-group') || 'highlight'
-          });
+        const decorated = event.target?.closest?.('[data-bookkit-text-mark]');
+        for (const decoration of decorated?.__bookkitMarks || []) {
+          post({ type: 'decorationTapped', id: decoration.id, group: decoration.group });
         }
 
         const target = event.target && event.target.closest ? event.target.closest('a') : null;

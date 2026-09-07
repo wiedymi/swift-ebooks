@@ -145,7 +145,27 @@ private struct ExampleRootView: View {
                 sidebar(reader: reader)
                     .frame(width: 320)
                 Divider()
-                BookReaderView(reader: reader)
+                BookReaderView(reader: reader, observesSystemAccessibility: false)
+                    .selectionActions { selection in
+                        HStack {
+                            Button("Highlight") {
+                                Task { @MainActor in
+                                    do { _ = try await reader.highlightSelection() }
+                                    catch { model.errorMessage = error.localizedDescription }
+                                }
+                            }
+                            Button("Read aloud") { reader.speech.start(from: selection.locator) }
+                            Button("Clear selection") {
+                                Task { @MainActor in
+                                    do { try await reader.clearSelection() }
+                                    catch { model.errorMessage = error.localizedDescription }
+                                }
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .padding()
+                        .background(.regularMaterial)
+                    }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         } else {
@@ -208,6 +228,8 @@ private struct ExampleRootView: View {
                 navigationGroup("Landmarks", nodes: reader.book.landmarks)
                 navigationGroup("Page List", nodes: reader.book.pageList)
 
+                ReaderFeatureControls(reader: reader)
+                    .id(reader.book.id)
                 bookmarkSection(reader: reader)
                 eventSection(reader: reader)
             }

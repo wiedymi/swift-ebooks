@@ -24,6 +24,7 @@ final class ContentRenderer: Navigator {
     private let maxHistoryDepth = 128
 
     private var lastRenderContext: RenderContext?
+    private var autosaveTask: Task<Void, Never>?
     private var layoutEventTask: Task<Void, Never>?
     private var currentChapterIndex: Int = 0
     private var backHistory: [Position] = []
@@ -31,6 +32,43 @@ final class ContentRenderer: Navigator {
     private var decorationsByGroup: [DecorationGroup: [Decoration]] = [:]
     private var lastDecorationTapEvent: DecorationTapEvent?
     private var accessibilitySettings: ReaderAccessibilitySettings = .default
+
+    func followText(_ locator: Locator) async throws {
+        try await navigateWithoutHistory(to: locator.position)
+        eventHub.yield(.locatorChanged(await currentLocator()))
+    }
+
+    func allDecorations() -> [Decoration] {
+        [DecorationGroup.highlight, .search, .tts].flatMap { decorationsByGroup[$0] ?? [] }
+    }
+
+    func clearSelection() async throws {
+        try await reflowLayout?.clearSelection()
+        eventHub.yield(.selectionCleared)
+    }
+
+    func saveState() async throws {
+        autosaveTask?.cancel()
+        autosaveTask = nil
+        if lastRenderContext != nil, let position = try await reflowLayout?.capturePosition() {
+            await reader.sync(to: position)
+        }
+        try await reader.persist()
+    }
+
+    private func scheduleSave() {
+        autosaveTask?.cancel()
+        autosaveTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(300))
+                guard let self else { return }
+                try await self.reader.persist()
+            } catch is CancellationError {
+            } catch {
+                self?.eventHub.yield(.error(BookError.from(error)))
+            }
+        }
+    }
 
     convenience init(
         book: Book,
@@ -99,6 +137,7 @@ final class ContentRenderer: Navigator {
 
     deinit {
         layoutEventTask?.cancel()
+        autosaveTask?.cancel()
     }
 
     func renderChapter(
@@ -214,7 +253,7 @@ final class ContentRenderer: Navigator {
     }
 
     func currentPosition() async -> Position {
-        if let layoutPosition = reflowLayout?.position() {
+        if lastRenderContext != nil, let layoutPosition = reflowLayout?.position() {
             await reader.sync(to: layoutPosition)
             currentChapterIndex = layoutPosition.spineIndex
         }
@@ -391,6 +430,7 @@ final class ContentRenderer: Navigator {
     func setDecorations(_ decorations: [Decoration], in group: DecorationGroup) async throws {
         decorationsByGroup[group] = decorations.map { decoration in
             var normalized = decoration
+            normalized.group = group
             if normalized.style == DecorationStyle() {
                 normalized.style = .default(for: group)
             }
@@ -558,7 +598,9 @@ final class ContentRenderer: Navigator {
         }
     }
 
-    private func navigateWithoutHistory(to position: Position) async throws {
+    private func navigateWithoutHistory(to requested: Position) async throws {
+        var position = requested
+        position.progression = position.progression.isFinite ? min(max(position.progression, 0), 1) : 0
         switch mode {
         case .pdf:
             try await reader.go(to: position)
@@ -575,7 +617,8 @@ final class ContentRenderer: Navigator {
                 cfi: position.cfi,
                 fragment: position.fragment,
                 textContext: position.textContext,
-                timestamp: position.timestamp
+                timestamp: position.timestamp,
+                textRange: position.textRange
             ))
             currentChapterIndex = clamped.spineIndex
 
@@ -588,7 +631,8 @@ final class ContentRenderer: Navigator {
                 cfi: position.cfi,
                 fragment: position.fragment,
                 textContext: position.textContext,
-                timestamp: position.timestamp
+                timestamp: position.timestamp,
+                textRange: position.textRange
             ))
             currentChapterIndex = trackIndex
 
@@ -602,6 +646,11 @@ final class ContentRenderer: Navigator {
             }
 
             let targetIndex = min(max(position.spineIndex, 0), book.readingOrder.count - 1)
+            guard lastRenderContext != nil else {
+                try await reader.go(to: position)
+                currentChapterIndex = targetIndex
+                return
+            }
             if targetIndex != currentChapterIndex, let context = lastRenderContext {
                 let prefs = await reader.currentPreferences()
                 try await renderChapterInternal(
@@ -620,14 +669,19 @@ final class ContentRenderer: Navigator {
                 cfi: position.cfi,
                 fragment: position.fragment,
                 textContext: position.textContext,
-                timestamp: position.timestamp
+                timestamp: position.timestamp,
+                textRange: position.textRange
             ))
-            try await layout.goToProgression(position.progression)
-
-            if let anchor = position.fragment {
-                try await layout.goToAnchor(anchor)
+            if let range = position.textRange {
+                guard try await layout.goToText(range) != nil else {
+                    throw BookError.navigationFailed("The text location could not be found")
+                }
+            } else {
+                try await layout.goToProgression(position.progression)
+                if let anchor = position.fragment { try await layout.goToAnchor(anchor) }
             }
-            if let layoutPosition = layout.position() {
+            if var layoutPosition = layout.position() {
+                layoutPosition.textRange = position.textRange
                 await reader.sync(to: layoutPosition)
                 currentChapterIndex = layoutPosition.spineIndex
             }
@@ -640,11 +694,9 @@ final class ContentRenderer: Navigator {
             return
         }
 
-        let decorations = decorationsByGroup.values
-            .flatMap { $0 }
+        let decorations = allDecorations()
             .filter { decoration in
-                decoration.locator.sectionIndex == currentChapterIndex &&
-                    !(decoration.locator.anchor?.isEmpty ?? true)
+                decoration.locator.sectionIndex == currentChapterIndex
             }
         try await layout.setDecorations(decorations)
     }
@@ -750,7 +802,9 @@ final class ContentRenderer: Navigator {
             eventHub.yield(.paginationChanged(pageMap))
 
         case let .positionChanged(position):
+            guard lastRenderContext != nil else { return }
             await reader.sync(to: position)
+            scheduleSave()
             currentChapterIndex = position.spineIndex
             eventHub.yield(.locatorChanged(book.locator(for: position)))
 
@@ -773,8 +827,16 @@ final class ContentRenderer: Navigator {
         case let .custom(name, payload):
             eventHub.yield(.bridgeMessage(name: name, payload: payload))
 
+        case .selectionCleared:
+            eventHub.yield(.selectionCleared)
+
         case let .selectionChanged(range, text):
-            let locator = await currentLocator()
+            var locator = await currentLocator()
+            locator.anchor = nil
+            locator.cfi = nil
+            locator.textContext = range.context
+            locator.textRange = ReaderTextRange(start: range.start, end: range.end, quote: text,
+                prefix: range.context?.prefix ?? "", suffix: range.context?.suffix ?? "")
             eventHub.yield(
                 .selectionChanged(ReaderSelection(range: range, text: text, locator: locator))
             )

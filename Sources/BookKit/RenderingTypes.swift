@@ -80,9 +80,14 @@ public enum LinkKind: String, Sendable {
 public struct SelectionRange: Sendable, Equatable {
     public var start: Int
     public var end: Int
+    public var context: TextContext?
+    /// Selection bounds in the content view, in points.
+    public var bounds: CGRect?
 
-    public init(start: Int, end: Int) {
+    public init(start: Int, end: Int, context: TextContext? = nil, bounds: CGRect? = nil) {
         self.start = max(start, 0)
         self.end = max(end, self.start)
+        self.context = context
+        self.bounds = bounds
     }
 }

@@ -90,6 +90,7 @@ public struct Locator: Sendable, Equatable, Hashable, Codable {
     public var anchor: String?
     public var cfi: String?
     public var textContext: TextContext?
+    public var textRange: ReaderTextRange?
     public var timestamp: Double?
 
     public init(
@@ -100,7 +101,8 @@ public struct Locator: Sendable, Equatable, Hashable, Codable {
         anchor: String?,
         cfi: String?,
         textContext: TextContext?,
-        timestamp: Double? = nil
+        timestamp: Double? = nil,
+        textRange: ReaderTextRange? = nil
     ) {
         self.sectionIndex = max(sectionIndex, 0)
         self.sectionHref = sectionHref
@@ -110,6 +112,7 @@ public struct Locator: Sendable, Equatable, Hashable, Codable {
         self.cfi = cfi
         self.textContext = textContext
         self.timestamp = timestamp
+        self.textRange = textRange
     }
 
     public var position: Position {
@@ -119,7 +122,8 @@ public struct Locator: Sendable, Equatable, Hashable, Codable {
             cfi: cfi,
             fragment: anchor,
             textContext: textContext,
-            timestamp: timestamp
+            timestamp: timestamp,
+            textRange: textRange
         )
     }
 }
@@ -204,12 +208,24 @@ public struct DecorationTapEvent: Sendable, Equatable, Hashable, Codable {
 public struct ReaderSelection: Sendable, Equatable {
     public var range: SelectionRange
     public var text: String
-    public var locator: Locator
+    /// One location for each continuous text range, including selections across PDF pages.
+    public var locators: [Locator]
+    public var locator: Locator {
+        get { locators.first ?? .start }
+        set {
+            if locators.isEmpty { locators = [newValue] }
+            else { locators[0] = newValue }
+        }
+    }
 
     public init(range: SelectionRange, text: String, locator: Locator) {
+        self.init(range: range, text: text, locators: [locator])
+    }
+
+    public init(range: SelectionRange, text: String, locators: [Locator]) {
         self.range = range
         self.text = text
-        self.locator = locator
+        self.locators = locators
     }
 }
 
@@ -217,6 +233,7 @@ enum NavigatorEvent: Sendable, Equatable {
     case ready
     case locatorChanged(Locator)
     case paginationChanged(PageMap)
+    case selectionCleared
     case selectionChanged(ReaderSelection)
     case contentHeightChanged(Double)
     case historyChanged(canGoBack: Bool, canGoForward: Bool)
@@ -289,7 +306,8 @@ public extension Book {
             anchor: position.fragment,
             cfi: position.cfi,
             textContext: position.textContext,
-            timestamp: position.timestamp
+            timestamp: position.timestamp,
+                textRange: position.textRange
         )
     }
 

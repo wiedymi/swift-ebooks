@@ -14,8 +14,9 @@ BookSource + OpenOptions
 ```
 
 `BookReader` owns engine selection, navigation, published state, events, and
-session lifetime. The host owns app controls, external URL opening, and optional
-features such as narration and annotations.
+session lifetime. The host owns app controls, external URL opening, annotation
+storage, and custom voice services. Optional system speech is owned by
+`ReaderSpeechController`.
 
 `BookReader` and framework-facing engines run on `@MainActor`. Parsing runs off
 the main actor. `ReaderStateActor` owns position, preferences, bookmarks, and
@@ -96,3 +97,19 @@ It can read older hex-encoded filenames; subsequent saves use the new name.
 | Fixed-page overlays | `FixedPageBookView` overlay builder |
 
 See [API.md](API.md) for examples and [SPEC.md](SPEC.md) for required behavior.
+
+## Text features
+
+SwiftSoup extracts HTML text; `NormalizedText` defines whitespace and native UTF-16
+mapping. Search, sentence extraction, and PDF selection share this path. Reflow
+keeps a matching DOM text map and resolves quotes with surrounding context.
+Marks wrap only selected text and preserve the original semantic elements.
+
+`ReaderSpeechController` owns one cancellable reading task and a session-owned
+`ReaderSpeechEngine`. The system engine isolates AVFoundation state on the main
+actor and transfers only immutable request IDs and ranges from delegate callbacks.
+The host can use the same text and locators with another speech or dubbing service.
+
+Passive scroll saves wait 300 ms. Explicit saves capture the current native
+position; writes are serialized by the shared state actor. Closing a reader stops
+speech, completes pending viewport work, and saves state before cleanup.

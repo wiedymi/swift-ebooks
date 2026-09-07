@@ -6,6 +6,7 @@ enum ReflowLayoutEvent: Sendable, Equatable {
     case positionChanged(Position)
     case linkTapped(url: URL, kind: LinkKind)
     case decorationTapped(id: String, group: DecorationGroup)
+    case selectionCleared
     case selectionChanged(range: SelectionRange, text: String)
     case contentHeightChanged(Double)
     case custom(name: String, payload: BridgeValue)
@@ -64,7 +65,9 @@ final class ReflowLayout {
         } else {
             renderedHTML = sanitized
         }
-        var resolvedCSS = ResolveStyles.run(baseCSS: baseCSS, theme: theme, typography: typography)
+        var baseTheme = theme
+        baseTheme.customCSS = ""
+        var resolvedCSS = ResolveStyles.run(baseCSS: baseCSS, theme: baseTheme, typography: typography)
         if chapter.page != nil {
             resolvedCSS += """
             \nhtml, body { width: 100%; height: 100%; overflow: hidden; }
@@ -86,6 +89,29 @@ final class ReflowLayout {
         try await bridge.setTheme(theme)
         try await bridge.setTypography(typography)
         try await bridge.measurePages()
+    }
+
+    public func goToText(_ range: ReaderTextRange) async throws -> Double? {
+        guard let progression = try await bridge.goToText(range) else { return nil }
+        var position = lastPosition ?? Position(spineIndex: currentSpineIndex, progression: progression)
+        position.progression = progression
+        position.textRange = range
+        lastPosition = position
+        return progression
+    }
+
+    func capturePosition() async throws -> Position? {
+        guard var position = try await bridge.capturePosition() else { return lastPosition }
+        position.spineIndex = currentSpineIndex
+        if let previous = lastPosition, abs(previous.progression - position.progression) < 0.0001 {
+            position.textRange = previous.textRange
+        }
+        lastPosition = position
+        return position
+    }
+
+    public func clearSelection() async throws {
+        try await bridge.clearSelection()
     }
 
     public func goToAnchor(_ id: String) async throws {
@@ -183,7 +209,10 @@ final class ReflowLayout {
             eventHub.yield(.paginationChanged(lastPageMap))
 
         case let .positionChanged(_, progression, cfi, anchor):
-            lastPosition = Position(spineIndex: currentSpineIndex, progression: progression, cfi: cfi, fragment: anchor)
+            let retainedRange = lastPosition.flatMap { previous in
+                abs(previous.progression - progression) < 0.0001 ? previous.textRange : nil
+            }
+            lastPosition = Position(spineIndex: currentSpineIndex, progression: progression, cfi: cfi, fragment: anchor, textRange: retainedRange)
             if let lastPosition {
                 eventHub.yield(.positionChanged(lastPosition))
             }
@@ -195,6 +224,10 @@ final class ReflowLayout {
         case let .decorationTapped(id, group):
             lastDecorationTap = (id, group)
             eventHub.yield(.decorationTapped(id: id, group: group))
+
+        case .selectionCleared:
+            lastSelection = nil
+            eventHub.yield(.selectionCleared)
 
         case let .selectionChanged(range, text):
             lastSelection = (range, text)

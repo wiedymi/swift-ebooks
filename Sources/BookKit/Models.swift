@@ -253,6 +253,7 @@ public struct Position: Sendable, Equatable, Hashable, Codable {
     public var cfi: String?
     public var fragment: String?
     public var textContext: TextContext?
+    public var textRange: ReaderTextRange?
     public var timestamp: Double?
 
     public init(
@@ -261,7 +262,8 @@ public struct Position: Sendable, Equatable, Hashable, Codable {
         cfi: String? = nil,
         fragment: String? = nil,
         textContext: TextContext? = nil,
-        timestamp: Double? = nil
+        timestamp: Double? = nil,
+        textRange: ReaderTextRange? = nil
     ) {
         self.spineIndex = spineIndex
         self.progression = progression
@@ -269,6 +271,7 @@ public struct Position: Sendable, Equatable, Hashable, Codable {
         self.fragment = fragment
         self.textContext = textContext
         self.timestamp = timestamp
+        self.textRange = textRange
     }
 }
 
@@ -370,41 +373,19 @@ public extension Book {
         }
     }
 
-    func search(_ query: String) async throws -> [SearchResult] {
-        let normalized = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        if normalized.isEmpty {
-            return []
-        }
-
-        let needle = normalized.lowercased()
+    @concurrent
+    func search(_ query: String, options: SearchOptions = .init()) async throws -> [SearchResult] {
+        guard options.maximumResults > 0, !BookText.normalize(query).isEmpty else { return [] }
         var results: [SearchResult] = []
-
-        for (chapterIndex, chapter) in readingOrder.enumerated() {
-            let haystack = chapter.content.lowercased()
-            guard let range = haystack.range(of: needle) else {
-                continue
-            }
-
-            let lower = haystack.distance(from: haystack.startIndex, to: range.lowerBound)
-            let upper = haystack.distance(from: haystack.startIndex, to: range.upperBound)
-            let chapterLen = max(chapter.content.count, 1)
-            let progression = Double(lower) / Double(chapterLen)
-
-            let snippetStart = max(lower - 40, 0)
-            let snippetEnd = min(upper + 40, chapter.content.count)
-            let startIdx = chapter.content.index(chapter.content.startIndex, offsetBy: snippetStart)
-            let endIdx = chapter.content.index(chapter.content.startIndex, offsetBy: snippetEnd)
-            let snippet = String(chapter.content[startIdx..<endIdx])
-
-            results.append(
-                SearchResult(
-                    chapterID: chapter.id,
-                    position: Position(spineIndex: chapterIndex, progression: progression),
-                    snippet: snippet
-                )
-            )
+        for (index, chapter) in readingOrder.enumerated() {
+            try Task.checkCancellation()
+            var remaining = options
+            remaining.maximumResults = options.maximumResults - results.count
+            if remaining.maximumResults <= 0 { break }
+            let text = try await text(inSection: index)
+            results += BookText.matches(query, text: text, chapterID: chapter.id, index: index, options: remaining)
         }
-
+        try Task.checkCancellation()
         return results
     }
 }

@@ -75,6 +75,20 @@ let book = try await Book.open(from: fileURL)
 print(book.metadata.title)
 ```
 
+## Search, highlights, and speech
+
+```swift
+let results = try await reader.search("example")
+if let result = results.first { try await reader.go(to: result.position) }
+let highlights = try await reader.highlightSelection() // The app stores these values.
+reader.speech.start()
+```
+
+Search and highlights share precise text locations. The app can change styles,
+selection controls, page gestures, and speech behavior, or supply a custom voice
+engine. See the [API guide](docs/API.md) and the example app for working controls.
+HTML text parsing uses [SwiftSoup](https://github.com/scinfu/SwiftSoup).
+
 ## Validate
 
 ```bash

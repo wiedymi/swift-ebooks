@@ -1,5 +1,8 @@
 import Combine
 import Foundation
+#if canImport(PDFKit) && !os(tvOS)
+import PDFKit
+#endif
 
 #if canImport(WebKit)
 import WebKit
@@ -87,9 +90,18 @@ public final class BookReader: ObservableObject {
         presentationEngine == .bitmapFixed
     }
 
+    /// Marks currently applied to the session. The host owns persistent storage.
+    @Published public internal(set) var decorations: [Decoration] = []
+
+    #if canImport(PDFKit) && !os(tvOS)
+    weak var pdfView: PDFView?
+    #endif
+
     let presentationEngine: BookPresentationEngine
     let renderer: ContentRenderer
     let player: AudiobookPlayer?
+    var speechController: ReaderSpeechController?
+    let configuredSpeechEngine: (any ReaderSpeechEngine)?
     let eventHub = EventHub<BookReaderEvent>()
     var navigatorEventTask: Task<Void, Never>?
     var playbackEventTask: Task<Void, Never>?
@@ -105,7 +117,7 @@ public final class BookReader: ObservableObject {
         from url: URL,
         configuration: Configuration = Configuration()
     ) async throws -> BookReader {
-        let book = try await Book.open(from: url, options: configuration.openOptions)
+        let book = try await Book.open(from: url, options: configuration.openOptions, registry: configuration.parserRegistry)
         return try await BookReader(book: book, configuration: configuration)
     }
 
@@ -114,7 +126,7 @@ public final class BookReader: ObservableObject {
         source: BookSource,
         configuration: Configuration = Configuration()
     ) async throws -> BookReader {
-        let book = try await Book.open(source: source, options: configuration.openOptions)
+        let book = try await Book.open(source: source, options: configuration.openOptions, registry: configuration.parserRegistry)
         return try await BookReader(book: book, configuration: configuration)
     }
 
@@ -140,6 +152,7 @@ public final class BookReader: ObservableObject {
                 configuration: WebViewReflowConfiguration(plugins: configuration.plugins)
             )
             : nil
+        if let bridge { configuration.configureWebView?(bridge.webView) }
         reflowBridge = bridge
         #else
         let bridge: (any ReflowBridge)? = nil
@@ -164,6 +177,7 @@ public final class BookReader: ObservableObject {
             )
             : nil
 
+        self.configuredSpeechEngine = configuration.speechEngine
         self.book = book
         self.presentationEngine = presentationEngine
         self.renderer = renderer
@@ -210,14 +224,30 @@ public final class BookReader: ObservableObject {
         }
     }
 
+    isolated deinit {
+        speechController?.stop()
+        navigatorEventTask?.cancel()
+        playbackEventTask?.cancel()
+        viewportTask?.cancel()
+    }
+
+    /// Saves current state. Call before the app enters the background.
+    /// Throws storage errors so the app can retry.
+    public func saveState() async throws {
+        await viewportTask?.value
+        try await renderer.saveState()
+    }
+
     /// Stops session tasks and releases temporary playback resources.
     ///
     /// - Parameter removesTemporaryAudio: Whether extracted audiobook files
     ///   should be removed. The default is `true`.
     public func shutdown(removesTemporaryAudio: Bool = true) async {
+        await speechController?.shutdown()
+        viewportTask?.cancel()
+        do { try await saveState() } catch { report(error) }
         navigatorEventTask?.cancel()
         playbackEventTask?.cancel()
-        viewportTask?.cancel()
         if let player {
             await player.shutdown(removesTemporaryAudio: removesTemporaryAudio)
         }

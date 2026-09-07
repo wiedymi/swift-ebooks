@@ -8,7 +8,8 @@ See [support limits](IMPLEMENTATION_STATUS.md) for format compatibility and
 
 `BookReader` owns the session; `BookReaderView` chooses its presentation.
 `Book.open` provides parsing without UI. The host owns app controls, external URL
-opening, and optional features such as narration or annotations.
+opening, annotation storage, and custom voice services. BookKit offers optional
+system speech and portable text locations for app-defined speech or dubbing.
 
 Out of scope: DRM decryption, passwords or keys, CBR/RAR, publication scripts,
 website downloads, canonical EPUB CFI creation, complete proprietary Kindle
@@ -41,7 +42,7 @@ Each reader has one `ReaderStateActor`, shared by navigation and playback.
 Framework-facing state runs on `@MainActor`; parsing runs off it.
 
 `Position` contains a section/page/track index, local progress, optional anchor,
-integration-supplied CFI, text context, and timestamp. `Locator` adds href and total
+integration-supplied CFI, a precise text range, text context, and timestamp. `Locator` adds href and total
 progress. Audio progress is weighted by duration.
 
 `ReaderStateStore` persists position, preferences, bookmarks, and update time.
@@ -81,6 +82,10 @@ announcements, semantic markup, page labels, and accessible links.
 - Reopening preserves IDs and saved state.
 - Test protection, resource bounds, navigation, and multi-session ownership.
 - Test WebKit and AVFoundation paths with real framework instances.
+- Search text rather than HTML markup. Preserve all non-overlapping matches up to the host's limit.
+- Restore precise highlights using text offsets and quote context; reject ambiguous recovery.
+- Keep speech cancellation and replacement isolated to the active request.
+- Save passive scrolling and flush current position at background and close boundaries.
 - Pass the checks in [validation](TEST_COVERAGE.md); keep API examples and support
   claims aligned with code.
 

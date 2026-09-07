@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(WebKit)
+import WebKit
+#endif
 
 /// A snapshot of audiobook playback exposed by ``BookReader``.
 public struct BookReaderPlaybackState: Sendable, Equatable {
@@ -54,6 +57,7 @@ public enum BookReaderEvent: Sendable, Equatable {
 
     case paginationChanged(PageMap)
 
+    case selectionCleared
     case selectionChanged(ReaderSelection)
 
     /// Reflowable content reported a new document height.
@@ -90,6 +94,7 @@ public extension BookReader {
     struct Configuration {
         /// Resource, network, and parser options used while opening the book.
         public var openOptions: OpenOptions
+        public var parserRegistry: ParserRegistry
 
         /// Optional persistent storage for position, preferences, and bookmarks.
         public var stateStore: (any ReaderStateStore)?
@@ -115,6 +120,14 @@ public extension BookReader {
         /// Whether bitmap publications initially show a two-page spread.
         public var showsSpread: Bool
 
+        /// A session-owned custom speech or dubbing engine.
+        public var speechEngine: (any ReaderSpeechEngine)?
+
+        #if canImport(WebKit)
+        /// Runs once after creation. Preserve the session's navigation delegate and scripts.
+        public var configureWebView: (@MainActor (WKWebView) -> Void)?
+        #endif
+
         var audiobookEngine: (any AudiobookPlaybackEngine)?
 
         public init(
@@ -126,9 +139,12 @@ public extension BookReader {
             plugins: [ReflowScriptPlugin] = [],
             activatesRemoteCommands: Bool = true,
             remoteCommandSkipInterval: Double = 15,
-            showsSpread: Bool = false
+            showsSpread: Bool = false,
+            speechEngine: (any ReaderSpeechEngine)? = nil,
+            parserRegistry: ParserRegistry = .default
         ) {
             self.openOptions = openOptions
+            self.parserRegistry = parserRegistry
             self.stateStore = stateStore
             self.linkPolicy = linkPolicy
             self.preferences = preferences
@@ -137,6 +153,7 @@ public extension BookReader {
             self.activatesRemoteCommands = activatesRemoteCommands
             self.remoteCommandSkipInterval = max(remoteCommandSkipInterval, 1)
             self.showsSpread = showsSpread
+            self.speechEngine = speechEngine
             audiobookEngine = nil
         }
     }

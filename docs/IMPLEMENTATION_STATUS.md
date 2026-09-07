@@ -18,7 +18,9 @@ See [contracts](SPEC.md), [architecture](ARCHITECTURE.md), and
 | Fixed-page customization | Implemented | `FixedPageBookView` exposes fitted geometry, link bounds, accessible hit targets, visibility locators, and an arbitrary host overlay builder. |
 | Events | Implemented | `BookReaderEvent` independently broadcasts navigation, presentation, links, decorations, plug-ins, playback, and errors while published properties expose current state. |
 | Persistence | Implemented | Stable IDs, positions/timestamps, preferences, bookmarks, and file/in-memory stores are covered. |
-| Search | Implemented | In-memory first-match-per-section search over normalized content, including DjVu OCR text. |
+| Search | Implemented | All non-overlapping text matches up to a host limit, Unicode-aware matching options, text previews, cancellation, and precise locations. |
+| Text highlights | Implemented | Cross-element reflow ranges, PDF line ranges and multi-page selections, quote/context recovery, independent style groups, selection controls, and host-owned storage. |
+| Speech and dubbing | Implemented | Optional system speech, pause/resume/stop, bounded sentence text, word locations, custom engine injection, and app-driven cues. |
 | Canonical EPUB CFI | Not implemented | CFI values supplied by an integration are retained. Anchors, progression, text context, and timestamps are BookKit's built-in location mechanisms. |
 
 ## Format support
@@ -39,9 +41,15 @@ See [contracts](SPEC.md), [architecture](ARCHITECTURE.md), and
 
 ## Remaining compatibility work
 
-1. canonical EPUB CFI, text-quote re-anchoring, and EPUB media overlays;
+1. canonical EPUB CFI and EPUB media overlays;
 2. KF8 SKEL/FRAG/INDX breadth and HUFF/CDIC;
 3. indirect multi-file DjVu and broader unusual-chunk corpus coverage;
 4. incremental source/archive parsing rather than whole-source `Data` ingestion;
 5. OCR for image-only PDF/CBZ pages as an optional host service;
 6. larger adversarial, fuzz, visual-regression, and automated accessibility corpora.
+
+Text extraction does not evaluate external CSS. Native PDF text color cannot be
+changed by decoration styles. OCR for image-only content and remote voice services
+remain app-owned. Automated checks cover system-voice error handling and custom
+engine state; audible output, VoiceOver speech, and background audio still need
+real-device checks.

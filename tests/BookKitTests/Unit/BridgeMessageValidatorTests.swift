@@ -2,6 +2,13 @@ import XCTest
 @testable import BookKit
 
 final class BridgeMessageValidatorTests: XCTestCase {
+    func testRejectsNonFinitePositionsAndInvalidTextOffsets() {
+        XCTAssertNil(BridgeMessageValidator.decode(body: ["type": "positionChanged", "spineIndex": 0, "progression": Double.nan]))
+        for value in [Double.infinity, -1.0, 1.5] {
+            XCTAssertNil(BridgeMessageValidator.decode(body: ["type": "selectionChanged", "start": value, "end": 8, "text": "text"]))
+        }
+    }
+
     func testDecodesPaginationChanged() {
         let event = BridgeMessageValidator.decode(body: [
             "type": "paginationChanged",

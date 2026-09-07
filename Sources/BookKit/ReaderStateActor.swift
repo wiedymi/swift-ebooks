@@ -8,6 +8,7 @@ actor ReaderStateActor {
     private(set) var position: Position
     private(set) var bookmarks: [ReadingBookmark]
     private var preferences: ReaderPreferences
+    private var pendingWrite: Task<Void, Error>?
 
     init(
         book: Book,
@@ -57,7 +58,7 @@ actor ReaderStateActor {
         let chapter = book.readingOrder[pos.spineIndex]
         let chapterLength = max(chapter.content.count, 1)
         let currentOffset = Int(Double(chapterLength) * min(max(pos.progression, 0), 1))
-        let nextOffset = currentOffset + pageCharacterCount
+        let nextOffset = currentOffset + min(pageCharacterCount, chapterLength - currentOffset)
 
         if nextOffset < chapterLength {
             pos.progression = Double(nextOffset) / Double(chapterLength)
@@ -154,23 +155,25 @@ actor ReaderStateActor {
                 cfi: position.cfi,
                 fragment: position.fragment,
                 textContext: position.textContext,
-                timestamp: position.timestamp
+                timestamp: position.timestamp,
+                textRange: position.textRange
             )
         }
 
         let index = min(max(position.spineIndex, 0), chapterCount - 1)
-        let progression = min(max(position.progression, 0), 1)
+        let progression = position.progression.isFinite ? min(max(position.progression, 0), 1) : 0
         return Position(
             spineIndex: index,
             progression: progression,
             cfi: position.cfi,
             fragment: position.fragment,
             textContext: position.textContext,
-            timestamp: position.timestamp
+            timestamp: position.timestamp,
+            textRange: position.textRange
         )
     }
 
-    private func persist() async throws {
+    func persist() async throws {
         guard let stateStore else {
             return
         }
@@ -182,6 +185,12 @@ actor ReaderStateActor {
             preferences: preferences,
             updatedAt: Date()
         )
-        try await stateStore.saveState(snapshot)
+        let previous = pendingWrite
+        let write = Task {
+            _ = await previous?.result
+            try await stateStore.saveState(snapshot)
+        }
+        pendingWrite = write
+        try await write.value
     }
 }

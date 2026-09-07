@@ -2,17 +2,91 @@ import Foundation
 
 #if canImport(SwiftUI)
 import SwiftUI
+#if canImport(PDFKit) && !os(tvOS)
+import PDFKit
+#endif
+
+public enum ReaderPageTurnGesture: Sendable, Equatable {
+    /// Swipes turn pages only in paginated or bitmap content.
+    case automatic
+    case swipe
+    case disabled
+}
 
 /// Selects presentation and connects native view callbacks to the reader.
 public struct BookReaderView: View {
     @ObservedObject private var reader: BookReader
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
+    private let pageTurnGesture: ReaderPageTurnGesture
+    private let observesSystemAccessibility: Bool
+    private var fixedOverlay: (FixedPageOverlayContext) -> AnyView = { _ in AnyView(EmptyView()) }
+    private var selectionContent: ((ReaderSelection) -> AnyView)?
+    #if canImport(PDFKit) && !os(tvOS)
+    private var configurePDF: (@MainActor (PDFView) -> Void)?
+    #endif
 
-    public init(reader: BookReader) {
+    public init(reader: BookReader, pageTurnGesture: ReaderPageTurnGesture = .automatic,
+                observesSystemAccessibility: Bool = true) {
         self.reader = reader
+        self.pageTurnGesture = pageTurnGesture
+        self.observesSystemAccessibility = observesSystemAccessibility
+    }
+
+    /// Adds app-defined controls while preserving the system copy menu.
+    public func selectionActions<Actions: View>(@ViewBuilder _ actions: @escaping (ReaderSelection) -> Actions) -> Self {
+        var view = self
+        view.selectionContent = { AnyView(actions($0)) }
+        return view
+    }
+
+    public func fixedPageOverlay<Overlay: View>(@ViewBuilder _ overlay: @escaping (FixedPageOverlayContext) -> Overlay) -> Self {
+        var view = self
+        view.fixedOverlay = { AnyView(overlay($0)) }
+        return view
+    }
+
+    #if canImport(PDFKit) && !os(tvOS)
+    /// Runs once for each native PDF view. Preserve its session delegate.
+    public func configurePDFView(_ configure: @escaping @MainActor (PDFView) -> Void) -> Self {
+        var view = self
+        view.configurePDF = configure
+        return view
+    }
+    #endif
+
+    public var body: some View {
+        content
+            .overlay(alignment: .bottom) {
+                if let selection = reader.selection, let selectionContent {
+                    selectionContent(selection)
+                }
+            }
+            .task(id: systemAccessibility) {
+                if observesSystemAccessibility {
+                    do { try await reader.setAccessibility(systemAccessibility) }
+                    catch { reader.report(error) }
+                }
+            }
+            .task(id: scenePhase) {
+                guard scenePhase != .active else { return }
+                do { try await reader.saveState() }
+                catch { reader.report(error) }
+            }
+    }
+
+    private var systemAccessibility: ReaderAccessibilitySettings {
+        var settings = reader.accessibility
+        if observesSystemAccessibility {
+            settings.isVoiceOverEnabled = voiceOverEnabled
+            settings.prefersReducedMotion = reduceMotion
+        }
+        return settings
     }
 
     @ViewBuilder
-    public var body: some View {
+    private var content: some View {
         switch reader.presentationEngine {
         case .reflow, .xhtmlFixed:
             reflowView
@@ -64,7 +138,8 @@ public struct BookReaderView: View {
                     Task { @MainActor in
                         await reader.updateFixedPageVisibility(visibility)
                     }
-                }
+                },
+                overlay: fixedOverlay
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         )
@@ -86,7 +161,16 @@ public struct BookReaderView: View {
                     Task { @MainActor in
                         await reader.activatePDFLink(url)
                     }
-                }
+                },
+                configureView: { view in
+                    reader.pdfView = view
+                    configurePDF?(view)
+                },
+                locator: reader.locator,
+                decorations: reader.decorations,
+                onSelectionChanged: reader.updatePDFSelection,
+                onDecorationTapped: { reader.eventHub.yield(.decorationTapped($0)) },
+                onError: { reader.report($0) }
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             #else
@@ -127,16 +211,28 @@ public struct BookReaderView: View {
         #if os(tvOS)
         content
         #else
-        content.simultaneousGesture(pageSwipeGesture)
+        content.simultaneousGesture(pageSwipeGesture, including: allowsPageSwipe ? .all : .subviews)
         #endif
+    }
+
+    private var allowsPageSwipe: Bool {
+        guard reader.selection == nil, !reader.accessibility.isVoiceOverEnabled else { return false }
+        switch pageTurnGesture {
+        case .disabled: return false
+        case .swipe: return true
+        case .automatic:
+            return reader.supportsSpreads || reader.preferences.readingMode == .paginated
+        }
     }
 
     #if !os(tvOS)
     private var pageSwipeGesture: some Gesture {
         DragGesture(minimumDistance: 24)
             .onEnded { value in
-                guard abs(value.translation.width) > abs(value.translation.height) else { return }
-                if value.translation.width < 0 {
+                guard allowsPageSwipe, abs(value.translation.width) > abs(value.translation.height) else { return }
+                let next = reader.book.presentation.readingProgression == .rightToLeft
+                    ? value.translation.width > 0 : value.translation.width < 0
+                if next {
                     reader.perform { try await $0.next() }
                 } else {
                     reader.perform { try await $0.previous() }

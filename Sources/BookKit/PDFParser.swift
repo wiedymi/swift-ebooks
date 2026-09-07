@@ -31,7 +31,7 @@ struct PDFParser: BookParser {
                     id: "page-\(pageIndex + 1)",
                     href: "pdf://page/\(pageIndex + 1)",
                     title: "Page \(pageIndex + 1)",
-                    content: text.isEmpty ? "Page \(pageIndex + 1)" : text
+                    content: text
                 )
             )
         }
@@ -87,7 +87,7 @@ struct PDFParser: BookParser {
         }
 
         let text = data.bestEffortString().normalizedWhitespace()
-        let chapter = Chapter(id: "page-1", href: "pdf://page/1", title: "Page 1", content: text.isEmpty ? "Page 1" : text)
+        let chapter = Chapter(id: "page-1", href: "pdf://page/1", title: "Page 1", content: text)
         return Book(
             id: DeterministicIdentifier.make(namespace: "pdf", data: data),
             format: .pdf,

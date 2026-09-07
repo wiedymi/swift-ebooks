@@ -149,12 +149,17 @@ public extension BookReader {
         _ decorations: [Decoration],
         in group: DecorationGroup
     ) async throws {
+        guard decorations.isEmpty || capabilities.contains(.textDecorations) else {
+            throw BookError.renderingFailed("This presentation does not support text decorations")
+        }
         try await renderer.setDecorations(decorations, in: group)
+        self.decorations = renderer.allDecorations()
     }
 
     /// Clears one decoration group, or every group when `group` is `nil`.
     func clearDecorations(in group: DecorationGroup? = nil) async throws {
         try await renderer.clearDecorations(in: group)
+        decorations = renderer.allDecorations()
     }
 
     /// Calls a command provided by a trusted reflow script plug-in.
@@ -165,5 +170,41 @@ public extension BookReader {
         payload: BridgeValue = .null
     ) async throws -> BridgeValue {
         try await renderer.callBridgeCommand(name, payload: payload)
+    }
+}
+
+public extension BookReader {
+    func search(_ query: String, options: SearchOptions = .init()) async throws -> [SearchResult] {
+        try await book.search(query, options: options)
+    }
+
+    func clearSelection() async throws {
+        #if canImport(PDFKit) && !os(tvOS)
+        pdfView?.clearSelection()
+        #endif
+        try await renderer.clearSelection()
+        if selection != nil {
+            selection = nil
+            eventHub.yield(.selectionCleared)
+        }
+    }
+
+    /// Returns the active marks so the app can edit or persist them.
+    func decorations(in group: DecorationGroup) -> [Decoration] {
+        renderer.decorations(in: group)
+    }
+
+    /// Adds marks for selected text. The app owns storage of the returned values.
+    @discardableResult
+    func highlightSelection(id: String = UUID().uuidString, style: DecorationStyle = .default(for: .highlight)) async throws -> [Decoration] {
+        guard let selection, !selection.locators.isEmpty else { throw BookError.navigationFailed("No text is selected") }
+        let added = selection.locators.enumerated().map { index, locator in
+            Decoration(id: index == 0 ? id : "\(id)-\(index)", group: .highlight, locator: locator, style: style)
+        }
+        let ids = Set(added.map(\.id))
+        var marks = decorations(in: .highlight).filter { !ids.contains($0.id) }
+        marks += added
+        try await setDecorations(marks, in: .highlight)
+        return added
     }
 }

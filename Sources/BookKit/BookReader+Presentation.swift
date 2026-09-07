@@ -62,7 +62,28 @@ extension BookReader {
         }
     }
 
+    #if canImport(PDFKit) && !os(tvOS)
+    func updatePDFSelection(_ parts: [PDFTextSelection]) {
+        guard let first = parts.first else {
+            guard selection != nil else { return }
+            selection = nil
+            eventHub.yield(.selectionCleared)
+            return
+        }
+        let locations = parts.map { part in
+            book.locator(for: Position(spineIndex: part.pageIndex, progression: 0, textRange: part.range))
+        }
+        let bounds = parts.reduce(CGRect.null) { $0.union($1.bounds) }
+        let selection = ReaderSelection(range: SelectionRange(start: first.range.start, end: first.range.end, bounds: bounds),
+            text: parts.map { $0.range.quote }.joined(separator: "\n"), locators: locations)
+        guard self.selection != selection else { return }
+        self.selection = selection
+        eventHub.yield(.selectionChanged(selection))
+    }
+    #endif
+
     func updatePDFPage(_ index: Int) async {
+        guard index != position.spineIndex else { return }
         do {
             try await renderer.go(to: Position(spineIndex: index, progression: 0))
             await refreshState()
@@ -127,7 +148,12 @@ extension BookReader {
             self.pageMap = pageMap
             pageCount = pageMap.pageCount
             eventHub.yield(.paginationChanged(pageMap))
+        case .selectionCleared:
+            guard selection != nil else { return }
+            selection = nil
+            eventHub.yield(.selectionCleared)
         case let .selectionChanged(selection):
+            guard self.selection != selection else { return }
             self.selection = selection
             eventHub.yield(.selectionChanged(selection))
         case let .contentHeightChanged(height):

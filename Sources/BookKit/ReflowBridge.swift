@@ -6,6 +6,7 @@ enum ReflowBridgeEvent: Sendable, Equatable {
     case positionChanged(spineIndex: Int, progression: Double, cfi: String?, anchor: String?)
     case linkTapped(url: URL, kind: LinkKind)
     case decorationTapped(id: String, group: DecorationGroup)
+    case selectionCleared
     case selectionChanged(range: SelectionRange, text: String)
     case contentHeightChanged(Double)
     case custom(name: String, payload: BridgeValue)
@@ -16,6 +17,9 @@ protocol ReflowBridge: AnyObject {
     var events: AsyncStream<ReflowBridgeEvent> { get }
 
     func setContent(html: String, css: String, viewport: Viewport) async throws
+    func goToText(_ range: ReaderTextRange) async throws -> Double?
+    func clearSelection() async throws
+    func capturePosition() async throws -> Position?
     func goToAnchor(_ id: String) async throws
     func goToProgression(_ value: Double) async throws
     func setReadingMode(_ mode: ReadingMode) async throws
@@ -30,6 +34,9 @@ protocol ReflowBridge: AnyObject {
 }
 
 extension ReflowBridge {
+    func goToText(_: ReaderTextRange) async throws -> Double? { nil }
+    func clearSelection() async throws {}
+    func capturePosition() async throws -> Position? { nil }
     func setAccessibility(_: ReaderAccessibilitySettings) async throws {}
     func setPublicationLayout(_: PublicationLayout) async throws {}
     func setNetworkAccessAllowed(_: Bool) async throws {}
@@ -100,7 +107,21 @@ enum BridgeMessageValidator {
             else {
                 return nil
             }
-            return .selectionChanged(range: SelectionRange(start: start, end: end), text: text)
+            guard start >= 0, end >= start else { return nil }
+            let context: TextContext? = (dict["prefix"] as? String).map {
+                TextContext(prefix: $0, suffix: dict["suffix"] as? String ?? "")
+            }
+            var bounds: CGRect?
+            if let raw = dict["bounds"] as? [String: Any],
+               let x = numericDouble(raw["x"]), let y = numericDouble(raw["y"]),
+               let width = numericDouble(raw["width"]), let height = numericDouble(raw["height"]),
+               width >= 0, height >= 0 {
+                bounds = CGRect(x: x, y: y, width: width, height: height)
+            }
+            return .selectionChanged(range: SelectionRange(start: start, end: end, context: context, bounds: bounds), text: text)
+
+        case "selectionCleared":
+            return .selectionCleared
 
         case "contentHeightChanged":
             guard let value = numericDouble(dict["value"]) else {
@@ -152,22 +173,24 @@ enum BridgeMessageValidator {
                 values = []
             }
 
-            output[idx] = values.map { min(max($0, 0), 1) }
+            output[idx] = values.filter(\.isFinite).map { min(max($0, 0), 1) }
         }
         return output
     }
 
     private static func numericInt(_ value: Any?) -> Int? {
         if let int = value as? Int { return int }
-        if let number = value as? NSNumber { return number.intValue }
-        if let str = value as? String { return Int(str) }
-        return nil
+        if let string = value as? String, let int = Int(string) { return int }
+        guard let number = numericDouble(value) else { return nil }
+        return Int(exactly: number)
     }
 
     private static func numericDouble(_ value: Any?) -> Double? {
-        if let d = value as? Double { return d }
-        if let number = value as? NSNumber { return number.doubleValue }
-        if let str = value as? String { return Double(str) }
-        return nil
+        let result: Double?
+        if let number = value as? Double { result = number }
+        else if let number = value as? NSNumber { result = number.doubleValue }
+        else if let string = value as? String { result = Double(string) }
+        else { result = nil }
+        return result.flatMap { $0.isFinite ? $0 : nil }
     }
 }

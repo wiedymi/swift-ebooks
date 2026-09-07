@@ -206,28 +206,25 @@ enum Normalize {
     }
 }
 
+/// Reusable text index. Build off the main actor for large books.
 public struct SearchIndex: Sendable {
     private let lines: [(chapterID: String, text: String, chapterIndex: Int)]
 
     public init(book: Book) {
-        self.lines = book.readingOrder.enumerated().map { idx, chapter in
-            (chapter.id, chapter.content.lowercased(), idx)
+        let html = BookPresentationEngine(book: book).requiresReflowBridge
+        lines = book.readingOrder.enumerated().map { index, chapter in
+            (chapter.id, (try? BookText.extract(chapter.content, isHTML: html)) ?? "", index)
         }
     }
 
-    public func find(_ query: String) -> [SearchResult] {
-        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !needle.isEmpty else { return [] }
-
-        return lines.compactMap { entry in
-            guard let range = entry.text.range(of: needle) else { return nil }
-            let offset = entry.text.distance(from: entry.text.startIndex, to: range.lowerBound)
-            let len = max(entry.text.count, 1)
-            return SearchResult(
-                chapterID: entry.chapterID,
-                position: Position(spineIndex: entry.chapterIndex, progression: Double(offset) / Double(len)),
-                snippet: "...\(needle)..."
-            )
+    public func find(_ query: String, options: SearchOptions = .init()) -> [SearchResult] {
+        var result: [SearchResult] = []
+        for entry in lines {
+            var remaining = options
+            remaining.maximumResults = options.maximumResults - result.count
+            if remaining.maximumResults <= 0 { break }
+            result += BookText.matches(query, text: entry.text, chapterID: entry.chapterID, index: entry.chapterIndex, options: remaining)
         }
+        return result
     }
 }

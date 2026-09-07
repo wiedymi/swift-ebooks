@@ -2,6 +2,19 @@ import XCTest
 @testable import BookKit
 
 final class ReaderStateStoreTests: XCTestCase {
+    func testReentrantSavesFinishInRequestOrder() async throws {
+        let started = expectation(description: "First save started")
+        let store = DelayedReaderStore(onStart: { started.fulfill() })
+        let state = ReaderStateActor(book: makeBook(id: "ordered"), stateStore: store)
+        let first = Task { try await state.go(to: Position(spineIndex: 0, progression: 0.2)) }
+        await fulfillment(of: [started], timeout: 2)
+        let second = Task { try await state.go(to: Position(spineIndex: 0, progression: 0.8)) }
+        try await first.value
+        try await second.value
+        let saved = await store.snapshot
+        XCTAssertEqual(saved?.position.progression, 0.8)
+    }
+
     func testInMemoryStoreReaderRestoreRoundTrip() async throws {
         let book = makeBook(id: "book-memory")
         let store = InMemoryReaderStateStore()
@@ -151,5 +164,21 @@ final class ReaderStateStoreTests: XCTestCase {
             rawExtensions: [:],
             diagnostics: []
         )
+    }
+}
+
+private actor DelayedReaderStore: ReaderStateStore {
+    let onStart: @Sendable () -> Void
+    init(onStart: @escaping @Sendable () -> Void) { self.onStart = onStart }
+    var started = false
+    var snapshot: ReaderSnapshot?
+    func loadState(forBookID bookID: String) async throws -> ReaderSnapshot? { snapshot }
+    func saveState(_ snapshot: ReaderSnapshot) async throws {
+        if !started {
+            started = true
+            onStart()
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        self.snapshot = snapshot
     }
 }

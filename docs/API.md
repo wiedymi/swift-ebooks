@@ -91,15 +91,17 @@ The view selects the engine and handles viewport, page, link, and playback callb
 | `bookmarks` | Persisted bookmarks |
 | `canGoBack`, `canGoForward` | Jump-history availability |
 | `pageCount`, `pageMap` | Current pagination information |
-| `selection` | Current reflow selection |
+| `selection` | Current reflow or native PDF selection |
+| `decorations` | Active highlight, search, and speech marks |
+| `speech` | Observable speech controller, created when first used |
 | `contentHeight` | Current reflow content height |
 | `visiblePageIndices` | Visible fixed-page indexes |
 | `playback` | Audiobook state, or `nil` for visual books |
 | `lastError` | Most recently reported engine error |
 
 `showsSpread` is writable and updates `BookReaderView` directly. The capability
-properties `isAudiobook` and `supportsSpreads` help hosts conditionally show
-format-appropriate controls without selecting an engine.
+properties `isAudiobook`, `supportsSpreads`, and `capabilities` help hosts show
+supported controls. A supported text feature can still have no text in an image-only book.
 
 ## Navigation
 
@@ -143,6 +145,13 @@ try await reader.setAccessibility(
 
 `setPreferences` applies all reading preferences in one operation. Preference
 changes use the same shared state owner for visual books and audiobooks.
+`Theme.customCSS` updates the open chapter and is removed when the theme changes.
+Exact location jumps are immediate; the navigation call does not leave a scroll
+animation in progress.
+
+`BookReaderView` follows system VoiceOver and reduced-motion settings by default.
+Use `observesSystemAccessibility: false` when the app supplies those settings.
+VoiceOver is the system screen reader; the speech API below is a separate feature.
 
 ## Persistence and bookmarks
 
@@ -156,7 +165,16 @@ try await reader.removeBookmark(id: bookmark.id)
 ```
 
 Snapshots contain position, preferences, bookmarks, and update time. File stores
-use fixed-length hashed names and can read older state files.
+use fixed-length hashed names and can read older state files. Scroll position is
+saved after 300 ms without a new position event. Saves run in order.
+
+```swift
+try await reader.saveState() // Throws storage errors; the app can retry.
+await reader.shutdown()     // Saves, stops speech, and reports errors in lastError.
+```
+
+`BookReaderView` also saves when the scene becomes inactive. Apps with a custom
+view must call `saveState()` before backgrounding and `shutdown()` when closing.
 
 ## Audiobook playback
 
@@ -230,12 +248,119 @@ struct AppLinkPolicy: LinkPolicy {
 The host remains responsible for opening `.openExternally` URLs after receiving
 the event.
 
-## Decorations and trusted scripts
+## Search and highlights
 
 ```swift
-try await reader.setDecorations(highlights, in: .highlight)
+let results = try await reader.search(
+    "example", options: SearchOptions(diacriticSensitive: false, maximumResults: 500)
+)
+if let result = results.first {
+    try await reader.go(to: result.position)
+}
+
+let marks = try await reader.highlightSelection(
+    style: DecorationStyle(backgroundColor: "#ffe58f", underlineColor: "#b26a00")
+)
+let savedData = try JSONEncoder().encode(marks)
+// Store savedData in the app's annotation store.
+
+let restored = try JSONDecoder().decode([Decoration].self, from: savedData)
+try await reader.setDecorations(restored, in: .highlight)
 try await reader.clearDecorations(in: .highlight)
+try await reader.clearSelection()
 ```
+
+Search returns all non-overlapping matches up to the requested limit, with real
+text previews. `Book.search` and `SearchIndex.find` use the same matching rules.
+`Book.search` runs off the main actor and supports task cancellation. The optional
+synchronous `SearchIndex` retains extracted text; build it off the main actor.
+
+HTML extraction decodes entities and excludes markup, scripts, metadata, hidden
+attributes, and common inline hidden styles. It does not evaluate external CSS.
+Image-only pages have no searchable text unless the publication supplies OCR.
+
+`Position.textRange` and `Locator.textRange` contain UTF-16 offsets in normalized
+chapter text, the exact quote, and nearby text. Native reflow and PDF rendering
+use these fields to locate a sentence across elements or line breaks. Changed
+text is searched again using its context; an ambiguous match is not used.
+This is not a canonical EPUB CFI API.
+
+`ReaderSelection.locators` contains all selected ranges, including multiple PDF
+pages. `highlightSelection` returns one `Decoration` per range. The app stores
+these values with its notes and restores them with `setDecorations`.
+`ReaderSelection.range.bounds` is in content-view coordinates, in points.
+
+The `.highlight`, `.search`, and `.tts` groups are independent. Overlapping reflow
+styles use that order, with speech last. Applying marks preserves text selection
+and publisher styles. PDF supports background and underline marks with `#RGB`,
+`#RRGGBB`, or `#RRGGBBAA` colors; it does not recolor printed text. Bitmap pages
+use `fixedPageOverlay` for app-supplied regions.
+
+## Speech and dubbing
+
+```swift
+reader.speech.highlightStyle = DecorationStyle(backgroundColor: "#d0ebff")
+reader.speech.followsText = true
+reader.speech.highlightsText = true
+reader.speech.continuesAcrossSections = true
+reader.speech.start(options: SpeechOptions(language: "en-US", rate: 0.45))
+reader.speech.pause()
+reader.speech.resume()
+reader.speech.stop()
+```
+
+Observe `speech.state`, `speech.currentText`, and `speech.spokenLocation`. The last
+property contains the current word or phrase when the engine reports it. Default
+marks cover the current sentence. Set `highlightsText` to false and apply your own
+marks from `spokenLocation` for different behavior. Controls observe the speech
+controller itself, as shown in the example app.
+
+Speech starts at the sentence containing the supplied locator, current selection,
+or current reading position. Long sentences are split into at most 2,000 UTF-16
+units. `SystemReaderSpeechEngine.availableVoices` lists installed voices; pass a
+voice's identifier in `SpeechOptions`. Missing requested voices or languages fail
+with an error. The app controls its audio session and background-audio capability.
+`SystemReaderSpeechEngine(usesApplicationAudioSession: false)` instead lets the
+system manage a separate speech audio session on iOS, tvOS, and visionOS.
+
+For a custom voice or recorded dub, inject a session-owned `ReaderSpeechEngine`
+through `Configuration.speechEngine`. Its `speak` call must remain active until
+playback ends, and must finish on stop or cancellation. Word callbacks use UTF-16
+offsets in the supplied text. Remote service access belongs to that engine.
+
+An app can also drive its own player without implementing a speech engine:
+
+```swift
+let parts = try await reader.book.readingText(inSection: 0, maximumUTF16Length: 1_000)
+// Each part has text and a source locator for the app's voice or translation service.
+if let cue = parts.first {
+    try await reader.showSpokenText(cue.locator, followsText: true)
+}
+```
+
+## Custom view controls
+
+```swift
+BookReaderView(reader: reader, pageTurnGesture: .disabled)
+    .selectionActions { selection in
+        Button("Read from here") { reader.speech.start(from: selection.locator) }
+    }
+    .fixedPageOverlay { page in
+        Text("Page \(page.pageIndex + 1)")
+            .position(x: page.imageFrame.midX, y: page.imageFrame.minY + 20)
+    }
+```
+
+Selection controls appear at the bottom of the view; system copy controls remain
+available. Your app supplies their labels, style, and actions. Automatic page
+swipes are disabled during selection, scrolling mode, and VoiceOver. Explicit
+`.swipe` enables swipes in scrolling mode; `.disabled` leaves page turning to the app.
+
+`Configuration.configureWebView` and the view's `configurePDFView` modifier allow
+native setup. Preserve BookKit's delegates and scripts. Custom parsers can be
+passed directly in `Configuration.parserRegistry`.
+
+## Trusted scripts
 
 Trusted host scripts run in WebKit's isolated client content world:
 
@@ -281,16 +406,8 @@ presentation hints, diagnostics, and stable identifiers.
 format parsers. Fixed-page/PDF adapters and specialized views remain advanced
 surfaces for hosts that intentionally replace the default presentation.
 
-## Search and diagnostics
-
-```swift
-let index = SearchIndex(book: reader.book)
-let results = index.find("example")
-
-for diagnostic in reader.book.diagnostics {
-    print(diagnostic.severity, diagnostic.code, diagnostic.message)
-}
-```
+## Diagnostics
 
 Malformed or protected content throws `BookError`. Recoverable parser issues are
-reported through `Book.diagnostics`.
+reported through `Book.diagnostics`. Presentation, storage, and speech errors are
+also available through `reader.lastError` and the event stream.
