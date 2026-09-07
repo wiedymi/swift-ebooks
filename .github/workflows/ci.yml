@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          submodules: recursive
+          persist-credentials: false
+      - name: Toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+      - name: Corpus
+        run: ./scripts/verify_corpus.sh
+      - name: Tests
+        run: swift test
+      - name: Release build
+        run: swift build -c release
+      - name: Platform builds
+        run: |
+          for platform in 'iOS Simulator' 'tvOS Simulator' 'visionOS Simulator'; do
+            xcodebuild -scheme BookKitExample \
+              -destination "generic/platform=$platform" CODE_SIGNING_ALLOWED=NO build
+          done

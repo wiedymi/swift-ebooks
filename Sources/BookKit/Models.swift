@@ -347,7 +347,7 @@ public extension Book {
     ) async throws -> Book {
         let data: Data
         do {
-            data = try source.loadData(options: options)
+            data = try await source.loadData(options: options)
         } catch {
             throw BookError.from(error)
         }

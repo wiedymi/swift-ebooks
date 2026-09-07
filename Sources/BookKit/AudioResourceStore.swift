@@ -10,13 +10,9 @@ actor AudioResourceStore {
         self.book = book
         allowsNetwork = options.allowsNetwork
         let root = options.tempDirectory ?? FileManager.default.temporaryDirectory
-        let namespace = DeterministicIdentifier.make(
-            namespace: "audio-cache",
-            data: Data(book.id.utf8)
-        )
         directory = root
             .appendingPathComponent("BookKitAudio", isDirectory: true)
-            .appendingPathComponent(namespace, isDirectory: true)
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
     }
 
     public func url(forTrackAt index: Int) throws -> URL {

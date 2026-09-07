@@ -27,7 +27,7 @@ public actor ImagePageStore {
 
     public func data(forPageIndex pageIndex: Int) throws -> Data {
         guard let data = adapter.asset(forPageIndex: pageIndex)?.data else {
-            throw BookError.missingAsset("No image payload for page \(pageIndex + 1)")
+            throw BookError.missingAsset("No image payload for index \(pageIndex)")
         }
         return data
     }
@@ -51,9 +51,9 @@ public actor ImagePageStore {
         thumbnailPixelSize: Int = 320
     ) async {
         let radius = min(max(distance, 0), 8)
-        guard radius > 0 else { return }
+        guard radius > 0, adapter.book.readingOrder.indices.contains(pageIndex) else { return }
         let lower = max(pageIndex - radius, 0)
-        let upper = min(pageIndex + radius, adapter.pageCount - 1)
+        let upper = pageIndex + min(radius, adapter.pageCount - 1 - pageIndex)
         let size = max(thumbnailPixelSize, 1)
         var work: [(ThumbnailKey, Data)] = []
 

@@ -11,9 +11,12 @@ final class OpenOptionsAndPolicyTests: XCTestCase {
         XCTAssertGreaterThan(options.maxResourceBytes, 0)
     }
 
-    func testSourceSizeLimitIsEnforced() {
+    func testSourceSizeLimitIsEnforced() async {
         let source = BookSource.data(Data(repeating: 0, count: 5), fileName: "large.epub")
-        XCTAssertThrowsError(try source.loadData(options: OpenOptions(maxSourceBytes: 4)))
+        do {
+            _ = try await source.loadData(options: OpenOptions(maxSourceBytes: 4))
+            XCTFail("Expected size limit failure")
+        } catch BookError.io { } catch { XCTFail("Unexpected error: \(error)") }
     }
 
     @MainActor
@@ -45,13 +48,13 @@ final class OpenOptionsAndPolicyTests: XCTestCase {
         XCTAssertEqual(text, "hello")
     }
 
-    func testBookSourceDataProviderLoadsData() throws {
+    func testBookSourceDataProviderLoadsData() async throws {
         let payload = Data([1, 2, 3, 4, 5])
         let source = BookSource.dataProvider(fileName: "sample.epub") {
             payload
         }
 
-        let data = try source.loadData(options: OpenOptions())
+        let data = try await source.loadData(options: OpenOptions())
         XCTAssertEqual(data, payload)
     }
 }

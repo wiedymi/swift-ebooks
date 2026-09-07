@@ -6,7 +6,7 @@ struct MOBIParser: BookParser {
     public init() {}
 
     public func parse(source: BookSource, options: OpenOptions) async throws -> Book {
-        try KindlePublication.parse(source: source, options: options, format: .mobi)
+        try await KindlePublication.parse(source: source, options: options, format: .mobi)
     }
 }
 
@@ -16,13 +16,13 @@ struct AZW3Parser: BookParser {
     public init() {}
 
     public func parse(source: BookSource, options: OpenOptions) async throws -> Book {
-        try KindlePublication.parse(source: source, options: options, format: .azw3)
+        try await KindlePublication.parse(source: source, options: options, format: .azw3)
     }
 }
 
 private enum KindlePublication {
-    static func parse(source: BookSource, options: OpenOptions, format: BookFormat) throws -> Book {
-        let data = try source.loadData(options: options)
+    static func parse(source: BookSource, options: OpenOptions, format: BookFormat) async throws -> Book {
+        let data = try await source.loadData(options: options)
         let container = try PalmContainer(data: data)
         let header = try KindleHeader(record: container.records[0])
         guard header.encryption == 0 else {

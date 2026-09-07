@@ -54,12 +54,7 @@ public actor ResourceLoader {
                 if !options.allowsNetwork {
                     throw BookError.io("Remote asset fetch blocked by OpenOptions")
                 }
-                let (payload, response) = try await URLSession.shared.data(from: url)
-                if let response = response as? HTTPURLResponse,
-                   !(200...299).contains(response.statusCode)
-                {
-                    throw BookError.io("Remote asset returned HTTP \(response.statusCode)")
-                }
+                let payload = try await BoundedDataReader.remote(url, limit: maxAssetBytes)
                 return try validatedAssetData(payload, mediaType: nil)
             case "file":
                 let fileURL = URL(fileURLWithPath: url.path)
@@ -67,7 +62,7 @@ public actor ResourceLoader {
                     throw BookError.io("file:// asset outside allowed sandbox root")
                 }
                 return try options.fileAccess.withReadAccess(to: fileURL) { scoped in
-                    try validatedAssetData(Data(contentsOf: scoped), mediaType: nil)
+                    try validatedAssetData(BoundedDataReader.file(scoped, limit: maxAssetBytes), mediaType: nil)
                 }
             default:
                 return nil

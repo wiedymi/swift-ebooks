@@ -29,6 +29,7 @@ final class WebViewReflowBridge: NSObject, ReflowBridge, WKScriptMessageHandler,
     private let eventHub = EventHub<ReflowBridgeEvent>()
     private let messageHandlerProxy: WeakScriptMessageHandler
     private var allowsNetwork = false
+    private var networkBlockRules: WKContentRuleList?
     private var isDocumentReady = false
     private var documentLoadError: Error?
     private var documentReadyWaiters: [CheckedContinuation<Void, Error>] = []
@@ -122,6 +123,7 @@ final class WebViewReflowBridge: NSObject, ReflowBridge, WKScriptMessageHandler,
     }
 
     public func setContent(html: String, css: String, viewport: Viewport) async throws {
+        try await applyNetworkPolicy()
         let safeHTML = SanitizeContent.run(html, allowsNetwork: allowsNetwork)
         let safeCSS = SanitizeContent.css(css, allowsNetwork: allowsNetwork)
         let js = """
@@ -271,6 +273,28 @@ final class WebViewReflowBridge: NSObject, ReflowBridge, WKScriptMessageHandler,
 
     public func setNetworkAccessAllowed(_ allowed: Bool) async throws {
         allowsNetwork = allowed
+        try await applyNetworkPolicy()
+    }
+
+    private func applyNetworkPolicy() async throws {
+        if networkBlockRules == nil {
+            networkBlockRules = try await WKContentRuleListStore.default().compileContentRuleList(
+                forIdentifier: "BookKitOffline-v1",
+                encodedContentRuleList: """
+                [
+                  {"trigger":{"url-filter":"^https?:"},"action":{"type":"block"}},
+                  {"trigger":{"url-filter":"^wss?:"},"action":{"type":"block"}},
+                  {"trigger":{"url-filter":"^ftp:"},"action":{"type":"block"}}
+                ]
+                """
+            )
+        }
+        guard let networkBlockRules else {
+            throw BookError.renderingFailed("Unable to enforce offline resource policy")
+        }
+        let controller = webView.configuration.userContentController
+        controller.remove(networkBlockRules)
+        if !allowsNetwork { controller.add(networkBlockRules) }
     }
 
     public func callPlugin(_ name: String, payload: BridgeValue = .null) async throws -> BridgeValue {

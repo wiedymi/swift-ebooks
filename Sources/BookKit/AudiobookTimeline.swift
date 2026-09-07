@@ -15,7 +15,7 @@ struct AudiobookTimeline: Sendable {
     }
 
     public var totalDuration: Double {
-        book.readingOrder.reduce(0) { $0 + duration(ofTrackAt: $1.id) }
+        book.readingOrder.reduce(0) { $0 + effectiveDuration($1) }
     }
 
     public func duration(ofTrackAt index: Int) -> Double {
@@ -76,10 +76,5 @@ struct AudiobookTimeline: Sendable {
             return end - begin
         }
         return max(chapter.audio?.duration ?? 0, 0)
-    }
-
-    private func duration(ofTrackAt id: String) -> Double {
-        guard let chapter = book.readingOrder.first(where: { $0.id == id }) else { return 0 }
-        return effectiveDuration(chapter)
     }
 }

@@ -6,7 +6,7 @@ struct DjVuParser: BookParser {
     public init() {}
 
     public func parse(source: BookSource, options: OpenOptions) async throws -> Book {
-        let data = try source.loadData(options: options)
+        let data = try await source.loadData(options: options)
         if data.starts(with: Data("SDJV".utf8)) {
             throw BookError.protectedContent(
                 ContentProtection(kind: .djvuEncryption, scheme: "Secure DjVu")

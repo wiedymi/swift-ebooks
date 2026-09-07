@@ -5,11 +5,7 @@ import Foundation
 import WebKit
 #endif
 
-/// An opened publication and its complete reading session.
-///
-/// `BookReader` chooses and owns the appropriate rendering or playback engine,
-/// restores persistent state, keeps view callbacks synchronized with navigation,
-/// and exposes one observable state surface for every supported format.
+/// A reading session with navigation, persistence, and presentation.
 @MainActor
 public final class BookReader: ObservableObject {
     /// The normalized publication owned by this session.

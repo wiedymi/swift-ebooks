@@ -6,7 +6,7 @@ struct FB2Parser: BookParser {
     public init() {}
 
     public func parse(source: BookSource, options: OpenOptions) async throws -> Book {
-        var data = try source.loadData(options: options)
+        var data = try await source.loadData(options: options)
         var effectiveFileName = source.fileName
         var isCompressed = false
         if data.starts(with: Data([0x50, 0x4b, 0x03, 0x04])) {

@@ -10,7 +10,7 @@ struct PDFParser: BookParser {
     public init() {}
 
     public func parse(source: BookSource, options: OpenOptions) async throws -> Book {
-        let data = try source.loadData(options: options)
+        let data = try await source.loadData(options: options)
 
         #if canImport(PDFKit)
         guard let document = PDFDocument(data: data) else {

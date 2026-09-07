@@ -4,6 +4,36 @@ import XCTest
 
 @MainActor
 final class WebViewReflowBridgeTests: XCTestCase {
+    func testOfflineBlocksEncodedResourcesAndCanBeEnabledAgain() async throws {
+        let png = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")!
+        var response = Data("HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: \(png.count)\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n".utf8)
+        response.append(png)
+        let server = try LocalHTTPServer(response: response)
+        let url = try await server.start()
+        defer { server.stop() }
+        let bridge = WebViewReflowBridge()
+        let encoded = url.absoluteString.replacingOccurrences(of: "http:", with: "http&#58;")
+        let html = "<img src='\(encoded)?a'><img srcset='\(encoded)?b 1x'>"
+        for (allowed, expectedRequests) in [(false, 0), (true, 2), (false, 2)] {
+            if expectedRequests > 0 { try await bridge.setNetworkAccessAllowed(allowed) }
+            try await bridge.setContent(html: html, css: "", viewport: Viewport(width: 320, height: 480))
+            let width = try await bridge.webView.callAsyncJavaScript(
+                """
+                return await Promise.all([...document.images].map(img => new Promise((resolve, reject) => {
+                  const timer = setTimeout(() => reject(new Error('Image did not finish')), 4000);
+                  const finish = () => { clearTimeout(timer); resolve(img.naturalWidth); };
+                  if (img.complete) finish();
+                  else { img.onload = finish; img.onerror = finish; }
+                })));
+                """,
+                arguments: [:], in: nil, contentWorld: .defaultClient
+            )
+            XCTAssertEqual(width as? [Int], allowed ? [1, 1] : [0, 0])
+            XCTAssertEqual(server.requests.count, expectedRequests)
+        }
+        XCTAssertEqual(server.requests.count, 2)
+    }
+
     func testBootstrapCanPostReadyEventToNativeHandler() async throws {
         let bridge = WebViewReflowBridge()
         let events = bridge.events

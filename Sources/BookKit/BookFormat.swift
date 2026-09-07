@@ -48,9 +48,7 @@ enum FormatSniffer {
             return .pdf
         }
 
-        // Secure DjVu uses a distinct encrypted container signature. Detect it
-        // as DjVu so the parser can report protected content instead of a
-        // misleading unsupported-format error.
+        // Route Secure DjVu to the parser's protection check.
         if data.starts(with: Data("SDJV".utf8)) {
             return .djvu
         }

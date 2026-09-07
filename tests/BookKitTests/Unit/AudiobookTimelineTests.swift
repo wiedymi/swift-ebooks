@@ -51,6 +51,32 @@ final class AudiobookTimelineTests: XCTestCase {
         XCTAssertEqual(position.timestamp, 0)
     }
 
+    func testDurationsUseEachTrackEvenWhenIDsRepeat() throws {
+        var book = makeBook()
+        book.readingOrder[1].id = book.readingOrder[0].id
+        let timeline = try AudiobookTimeline(book: book)
+        XCTAssertEqual(timeline.totalDuration, 50)
+    }
+
+    func testAudioSessionCleanupDoesNotRemoveOtherSessionFiles() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var book = makeBook()
+        book.readingOrder[0].resourceID = "audio"
+        book.assets = [Asset(id: "audio", href: "one.mp3", mediaType: "audio/mpeg", data: AudioTestFixture.silentMP3)]
+        let first = AudioResourceStore(book: book, options: OpenOptions(tempDirectory: directory))
+        let second = AudioResourceStore(book: book, options: OpenOptions(tempDirectory: directory))
+        let firstURL = try await first.url(forTrackAt: 0)
+        let secondURL = try await second.url(forTrackAt: 0)
+        XCTAssertNotEqual(firstURL, secondURL)
+        try await first.removeAll()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: firstURL.path))
+        let cached = try await second.url(forTrackAt: 0)
+        XCTAssertEqual(try Data(contentsOf: cached), AudioTestFixture.silentMP3)
+        try await second.removeAll()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: secondURL.path))
+    }
+
     private func makeBook() -> Book {
         Book(
             id: "audio",

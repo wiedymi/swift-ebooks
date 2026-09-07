@@ -43,7 +43,7 @@ struct DjVuZPDecoder {
 
         // DjVu compatibility streams use the coder's MPS fast path. Besides
         // avoiding normalization, this deliberately leaves the probability
-        // state unchanged until the interval crosses the 0x7fff fence.
+        // state unchanged until the interval crosses 0x7fff.
         if z <= min(c, 0x7fff) {
             a = z
             return stateIndex & 1

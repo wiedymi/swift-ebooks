@@ -5,9 +5,8 @@ BookKit has two entry points:
 - `BookReader` and `BookReaderView` for a complete app reading session;
 - `Book.open` for parsing and normalized publication data without UI.
 
-The primary API hides WebKit, PDFKit, bitmap, and AVFoundation engine selection.
-All session and view operations are main-actor isolated. Parsing and persistence
-use Swift Concurrency.
+Session and view operations run on `@MainActor`. Parsing runs off the main actor;
+persistence is actor-owned.
 
 ## Open a reader
 
@@ -29,7 +28,8 @@ let fromProvider = try await BookReader.open(
 )
 ```
 
-The provider defers loading but currently materializes the complete source.
+Providers return complete `Data`; their allocations cannot be limited by BookKit.
+File and network sources enforce byte limits during reads.
 
 An already parsed or programmatically constructed model can start a session:
 
@@ -75,16 +75,7 @@ are enforced before ordinary rendering or playback.
 BookReaderView(reader: reader)
 ```
 
-That one view provides:
-
-- WebKit reflow and XHTML fixed-layout presentation;
-- bitmap pages and spreads for CBZ, DjVu, and image-only EPUB;
-- native PDFKit presentation where available, with a text fallback on tvOS;
-- default audiobook playback controls.
-
-It also owns viewport rerendering, swipe navigation, PDF page synchronization,
-fixed-page visibility, link forwarding, and audiobook scrubbing. Hosts do not
-need to branch on `Book.format` or `BookPresentation.layout`.
+The view selects the engine and handles viewport, page, link, and playback callbacks.
 
 ## Observable state
 
@@ -164,8 +155,8 @@ try await reader.updateBookmark(id: bookmark.id, note: "Review")
 try await reader.removeBookmark(id: bookmark.id)
 ```
 
-Snapshots contain the position, preferences, bookmarks, and update time. A
-reader session has one shared state owner even when the selected engine is audio.
+Snapshots contain position, preferences, bookmarks, and update time. File stores
+use fixed-length hashed names and can read older state files.
 
 ## Audiobook playback
 
@@ -270,7 +261,7 @@ let result = try await reader.callBridgeCommand(
 )
 ```
 
-See `BRIDGE_EXTENSIONS.md` for lifecycle and security details.
+See [bridge extensions](BRIDGE_EXTENSIONS.md) for hooks and script contracts.
 
 ## Parsing without a reader
 
@@ -294,7 +285,7 @@ surfaces for hosts that intentionally replace the default presentation.
 
 ```swift
 let index = SearchIndex(book: reader.book)
-let results = index.search("example")
+let results = index.find("example")
 
 for diagnostic in reader.book.diagnostics {
     print(diagnostic.severity, diagnostic.code, diagnostic.message)

@@ -35,6 +35,22 @@ final class ImagePageStoreTests: XCTestCase {
         }
     }
 
+    func testPrefetchIgnoresInvalidIndicesWithoutOverflow() async throws {
+        for count in [0, 1, 4] {
+            let store = ImagePageStore(book: makeBook(pageData: Array(repeating: nil, count: count)))
+            for index in [Int.min, -10, -1, count, count + 10, Int.max] {
+                await store.prefetch(aroundPageIndex: index, distance: Int.max)
+            }
+            let cached = await store.cachedThumbnailCount()
+            XCTAssertEqual(cached, 0)
+        }
+        let store = ImagePageStore(book: makeBook(pageData: []))
+        do {
+            _ = try await store.data(forPageIndex: Int.max)
+            XCTFail("Expected missing asset")
+        } catch BookError.missingAsset { }
+    }
+
     private func makeBook(pageData: [Data?]) -> Book {
         Book(
             id: "images",

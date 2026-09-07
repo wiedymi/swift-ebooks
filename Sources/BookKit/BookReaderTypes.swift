@@ -17,7 +17,6 @@ public struct BookReaderPlaybackState: Sendable, Equatable {
     /// Normalized progress through the complete audiobook.
     public var totalProgression: Double
 
-    /// Creates a playback snapshot.
     public init(
         status: AudiobookPlaybackStatus,
         position: Position,
@@ -51,13 +50,10 @@ public enum BookReaderEvent: Sendable, Equatable {
     /// The event stream is ready for use.
     case ready
 
-    /// The current locator changed.
     case locatorChanged(Locator)
 
-    /// Pagination was recalculated.
     case paginationChanged(PageMap)
 
-    /// The user's text selection changed.
     case selectionChanged(ReaderSelection)
 
     /// Reflowable content reported a new document height.
@@ -66,10 +62,8 @@ public enum BookReaderEvent: Sendable, Equatable {
     /// Back and forward navigation availability changed.
     case historyChanged(canGoBack: Bool, canGoForward: Bool)
 
-    /// Reader preferences changed.
     case preferencesChanged(ReaderPreferences)
 
-    /// Accessibility settings changed.
     case accessibilityChanged(ReaderAccessibilitySettings)
 
     /// A publication or external link was activated.
@@ -81,16 +75,13 @@ public enum BookReaderEvent: Sendable, Equatable {
     /// A trusted reflow plug-in emitted a custom message.
     case bridgeMessage(name: String, payload: BridgeValue)
 
-    /// Audiobook playback state changed.
     case playbackChanged(BookReaderPlaybackState)
 
-    /// Audiobook playback moved to another track.
     case playbackTrackChanged(index: Int, title: String?)
 
     /// Audiobook playback reached the end of the publication.
     case playbackEnded
 
-    /// A reader operation failed.
     case error(BookError)
 }
 
@@ -126,7 +117,6 @@ public extension BookReader {
 
         var audiobookEngine: (any AudiobookPlaybackEngine)?
 
-        /// Creates reader configuration.
         public init(
             openOptions: OpenOptions = OpenOptions(),
             stateStore: (any ReaderStateStore)? = nil,

@@ -107,6 +107,33 @@ final class ReaderStateStoreTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(snapshot?.preferences.typography.fontSize), 19, accuracy: 0.0001)
     }
 
+    func testLongIDsAndLegacyFiles() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let store = FileReaderStateStore(directory: directory)
+        let old = ReaderSnapshot(bookID: "old-book", position: Position(spineIndex: 1, progression: 0.3), bookmarks: [])
+        let oldName = old.bookID.utf8.map { String(format: "%02x", $0) }.joined() + ".json"
+        try JSONEncoder().encode(old).write(to: directory.appendingPathComponent(oldName))
+        let restored = try await store.loadState(forBookID: old.bookID)
+        XCTAssertEqual(restored, old)
+
+        var updated = old
+        updated.position = .start
+        try await store.saveState(updated)
+        let latest = try await store.loadState(forBookID: old.bookID)
+        XCTAssertEqual(latest, updated)
+
+        for id in [String(repeating: "a", count: 126), String(repeating: "📖", count: 1000), "../book"] {
+            let snapshot = ReaderSnapshot(bookID: id, position: .start, bookmarks: [])
+            try await store.saveState(snapshot)
+            let loaded = try await store.loadState(forBookID: id)
+            XCTAssertEqual(loaded, snapshot)
+        }
+        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        XCTAssertTrue(files.allSatisfy { $0.lastPathComponent.utf8.count <= 255 })
+    }
+
     private func makeBook(id: String) -> Book {
         Book(
             id: id,

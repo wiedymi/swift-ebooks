@@ -1,26 +1,8 @@
 # Bridge extensions
 
-BookKit's bridge is an extension boundary for trusted host-app code that needs
-access to the rendered DOM. Typical uses include text-to-speech focus, custom
-selection tools, reading telemetry, domain-specific annotations, and host UI that
-must stay synchronized with visible content.
-
-Publication code is not a plug-in. BookKit sanitizes publication markup, disables
-publication JavaScript by default, and installs its runtime and host plug-ins in
-`WKContentWorld.defaultClient`.
-
-## Runtime model
-
-The built-in runtime and every `ReflowScriptPlugin`:
-
-- share the same isolated app content world;
-- can read and modify the rendered publication DOM;
-- cannot be read or replaced by scripts in the page world;
-- remain installed while BookKit replaces chapter content in the same document;
-- communicate with Swift only through typed commands and events.
-
-Plug-ins are trusted application code. Do not install scripts from an ebook or an
-untrusted network response.
+Trusted host scripts run in `WKContentWorld.defaultClient`. They share the DOM
+and remain installed across chapter changes. Publication JavaScript is disabled;
+do not install scripts from an ebook or an untrusted response.
 
 ## Installing a plug-in
 
@@ -54,19 +36,6 @@ automatically prefixed, so use a stable namespace such as `speech.*` or
 
 ## App-to-JavaScript commands
 
-Register a command once when the plug-in script runs:
-
-```javascript
-window.BookKit.registerCommand('speech.focus', async payload => {
-  const target = document.getElementById(payload.anchor);
-  target?.scrollIntoView();
-  return {
-    anchor: payload.anchor,
-    focused: Boolean(target)
-  };
-});
-```
-
 Call it from the reader:
 
 ```swift
@@ -96,10 +65,10 @@ window.BookKit.post('speech.state', {
 });
 ```
 
-Receive it through the normal navigator stream:
+Receive it through the reader:
 
 ```swift
-let events = renderer.events
+let events = reader.events
 
 Task { @MainActor in
     for await event in events {
@@ -114,8 +83,7 @@ Task { @MainActor in
 }
 ```
 
-Every event subscriber receives its own buffered stream; a telemetry consumer does
-not steal events from UI state handling.
+Each subscriber receives an independent buffered stream.
 
 ## Bridge values
 
@@ -172,9 +140,8 @@ section. Plug-ins should therefore:
 - use stable publication anchors where available;
 - keep per-chapter observers disposable.
 
-The bridge emits high-frequency position updates at most once per animation frame
-and suppresses duplicate progression/anchor pairs. Explicit navigation commands
-still emit a deterministic position update.
+Passive positions are coalesced per animation frame and duplicates are suppressed.
+Explicit navigation still emits an update.
 
 ## Link handling
 

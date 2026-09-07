@@ -3,22 +3,14 @@ import Foundation
 #if canImport(SwiftUI)
 import SwiftUI
 
-/// The default presentation surface for every publication supported by BookKit.
-///
-/// The view selects WebKit, PDFKit, fixed-page, or audiobook presentation from
-/// the reader session and keeps native view callbacks synchronized automatically.
+/// Selects presentation and connects native view callbacks to the reader.
 public struct BookReaderView: View {
     @ObservedObject private var reader: BookReader
 
-    /// Creates the default presentation for an opened reader session.
-    ///
-    /// The view observes the reader and automatically chooses the appropriate
-    /// presentation engine for its publication.
     public init(reader: BookReader) {
         self.reader = reader
     }
 
-    /// The format-appropriate reader presentation.
     @ViewBuilder
     public var body: some View {
         switch reader.presentationEngine {

@@ -21,7 +21,6 @@ final class ContentRenderer: Navigator {
     private let pdfAdapter: PDFPageAdapter?
     private let fixedPageAdapter: FixedPageAdapter?
     private let linkPolicy: any LinkPolicy
-    private let embeddedAssetDataURLByID: [String: String]
     private let maxHistoryDepth = 128
 
     private var lastRenderContext: RenderContext?
@@ -65,7 +64,6 @@ final class ContentRenderer: Navigator {
         self.book = book
         self.reader = reader
         self.linkPolicy = linkPolicy
-        embeddedAssetDataURLByID = Self.makeEmbeddedAssetDataURLMap(assets: self.book.assets)
 
         switch BookPresentationEngine(book: self.book) {
         case .audio:
@@ -854,7 +852,7 @@ final class ContentRenderer: Navigator {
     }
 
     private func inlineAssetReferences(in html: String) -> String {
-        guard !embeddedAssetDataURLByID.isEmpty else {
+        guard !book.assets.isEmpty else {
             return html
         }
 
@@ -881,28 +879,17 @@ final class ContentRenderer: Navigator {
 
             let rawID = String(output[valueRange])
             let decodedID = rawID.removingPercentEncoding ?? rawID
-            guard let dataURL = embeddedAssetDataURLByID[decodedID] else {
-                continue
-            }
-
-            let quote = quotedWithDouble ? "\"" : "'"
-            output.replaceSubrange(fullRange, with: "\(attribute)=\(quote)\(dataURL)\(quote)")
-        }
-
-        return output
-    }
-
-    private static func makeEmbeddedAssetDataURLMap(assets: [Asset]) -> [String: String] {
-        var output: [String: String] = [:]
-        for asset in assets {
-            guard let data = asset.data, !data.isEmpty else {
+            guard let asset = book.assets.last(where: { $0.id == decodedID && $0.data?.isEmpty == false }),
+                  let data = asset.data else {
                 continue
             }
 
             let mediaType = asset.mediaType.isEmpty ? "application/octet-stream" : asset.mediaType
             let dataURL = "data:\(mediaType);base64,\(data.base64EncodedString())"
-            output[asset.id] = dataURL
+            let quote = quotedWithDouble ? "\"" : "'"
+            output.replaceSubrange(fullRange, with: "\(attribute)=\(quote)\(dataURL)\(quote)")
         }
+
         return output
     }
 }

@@ -68,7 +68,7 @@ public enum BookSource: Sendable {
         }
     }
 
-    func loadData(options: OpenOptions) throws -> Data {
+    func loadData(options: OpenOptions) async throws -> Data {
         let data: Data
         switch self {
         case let .data(payload, _):
@@ -80,12 +80,12 @@ public enum BookSource: Sendable {
                 if !options.allowsNetwork {
                     throw BookError.io("Network access is disabled by OpenOptions")
                 }
-                data = try Data(contentsOf: url)
+                data = try await BoundedDataReader.remote(url, limit: options.maxSourceBytes)
                 break
             }
 
             data = try options.fileAccess.withReadAccess(to: url) { scopedURL in
-                try Data(contentsOf: scopedURL)
+                try BoundedDataReader.file(scopedURL, limit: options.maxSourceBytes)
             }
         }
         guard data.count <= options.maxSourceBytes else {

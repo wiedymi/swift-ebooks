@@ -4,28 +4,24 @@ enum SanitizeContent {
     public static func run(_ htmlOrText: String, allowsNetwork: Bool = false) -> String {
         var output = htmlOrText
 
-        // Strip script tags completely.
         output = output.replacingOccurrences(
             of: "<script\\b[^<]*(?:(?!<\\/script>)<[^<]*)*<\\/script>",
             with: "",
             options: [.regularExpression, .caseInsensitive]
         )
 
-        // Remove inline event handlers.
         output = output.replacingOccurrences(
             of: "\\son[a-zA-Z]+\\s*=\\s*(\"[^\"]*\"|'[^']*'|[^\\s>]+)",
             with: "",
             options: [.regularExpression, .caseInsensitive]
         )
 
-        // Rewrite javascript: links to safe placeholders.
         output = output.replacingOccurrences(
             of: "javascript\\s*:",
             with: "about:blank#blocked-",
             options: [.regularExpression, .caseInsensitive]
         )
 
-        // Remove active embedded browsing contexts while keeping surrounding content.
         for tag in ["iframe", "object"] {
             output = output.replacingOccurrences(
                 of: "<\(tag)\\b[^>]*>.*?<\\/\(tag)\\s*>",
@@ -49,7 +45,6 @@ enum SanitizeContent {
             options: [.regularExpression, .caseInsensitive]
         )
 
-        // A publication can never escape the app sandbox through file:// resources.
         output = blockResourceAttributes(in: output, schemes: "file")
 
         if !allowsNetwork {

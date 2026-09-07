@@ -6,7 +6,7 @@ struct AudiobookParser: BookParser {
     public init() {}
 
     public func parse(source: BookSource, options: OpenOptions) async throws -> Book {
-        let data = try source.loadData(options: options)
+        let data = try await source.loadData(options: options)
         if data.starts(with: Data([0x50, 0x4b, 0x03, 0x04])) {
             return try parsePackage(data, source: source, options: options)
         }

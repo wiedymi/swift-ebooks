@@ -6,7 +6,7 @@ struct CBZParser: BookParser {
     public init() {}
 
     public func parse(source: BookSource, options: OpenOptions) async throws -> Book {
-        let data = try source.loadData(options: options)
+        let data = try await source.loadData(options: options)
         let container = try SafeZIPArchive(data: data, options: options, kind: "CBZ")
         let imagePaths = container.files.map(\.path)
             .filter(Self.isImagePath)

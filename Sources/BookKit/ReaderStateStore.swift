@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 public struct ReadingBookmark: Sendable, Equatable, Hashable, Codable, Identifiable {
@@ -97,12 +98,19 @@ public actor FileReaderStateStore: ReaderStateStore {
     }
 
     public func loadState(forBookID bookID: String) async throws -> ReaderSnapshot? {
-        let url = stateFileURL(forBookID: bookID)
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            return nil
+        var url = stateFileURL(forBookID: bookID)
+        if !FileManager.default.fileExists(atPath: url.path) {
+            // Older versions used two filename characters per UTF-8 byte.
+            guard bookID.utf8.count <= 125 else { return nil }
+            url = directory.appendingPathComponent(hexEncodedUTF8(bookID)).appendingPathExtension("json")
+            guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         }
         let data = try Data(contentsOf: url)
-        return try decoder.decode(ReaderSnapshot.self, from: data)
+        let snapshot = try decoder.decode(ReaderSnapshot.self, from: data)
+        guard snapshot.bookID == bookID else {
+            throw BookError.io("Saved state belongs to another book")
+        }
+        return snapshot
     }
 
     public func saveState(_ snapshot: ReaderSnapshot) async throws {
@@ -112,9 +120,8 @@ public actor FileReaderStateStore: ReaderStateStore {
     }
 
     private func stateFileURL(forBookID bookID: String) -> URL {
-        directory
-            .appendingPathComponent(hexEncodedUTF8(bookID))
-            .appendingPathExtension("json")
+        let name = SHA256.hash(data: Data(bookID.utf8)).map { String(format: "%02x", $0) }.joined()
+        return directory.appendingPathComponent(name).appendingPathExtension("json")
     }
 
     private func hexEncodedUTF8(_ value: String) -> String {
