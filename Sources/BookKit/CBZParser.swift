@@ -150,7 +150,11 @@ struct CBZParser: BookParser {
                 authors: authors,
                 language: comicInfo.language.nonEmpty,
                 publisher: comicInfo.publisher.nonEmpty,
-                publicationDate: publicationDate
+                publicationDate: publicationDate,
+                summary: comicInfo.summary.nonEmpty,
+                series: comicInfo.series.nonEmpty,
+                seriesPosition: Double(comicInfo.number),
+                coverAssetID: chapters.indices.contains(coverIndex) ? chapters[coverIndex].resourceID : nil
             ),
             readingOrder: chapters,
             assets: assets,

@@ -171,7 +171,11 @@ struct FB2Parser: BookParser {
                 language: language,
                 identifiers: identifiers,
                 publisher: publisher,
-                publicationDate: publicationDate
+                publicationDate: publicationDate,
+                summary: titleInfo?.child(named: "annotation")?.plainText.normalizedWhitespace().nonEmpty,
+                series: titleInfo?.child(named: "sequence")?.attribute(named: "name")?.nonEmpty,
+                seriesPosition: titleInfo?.child(named: "sequence")?.attribute(named: "number").flatMap(Double.init),
+                coverAssetID: titleInfo?.child(named: "coverpage")?.child(named: "image")?.attribute(named: "href").map { $0.hasPrefix("#") ? String($0.dropFirst()) : $0 }
             ),
             readingOrder: chapters,
             assets: assets,

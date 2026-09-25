@@ -79,7 +79,7 @@ struct EPUBParser: BookParser {
         let readingProgression: ReadingProgression = opf.pageProgressionDirection?.lowercased() == "rtl"
             ? .rightToLeft
             : .leftToRight
-        let coverID = opf.manifest.values.first(where: { $0.properties.contains("cover-image") })?.id
+        let coverID = opf.manifest.values.first(where: { $0.properties.contains("cover-image") })?.id ?? opf.coverAssetID
         let coverPageIndex = coverID.flatMap(spineOrder.firstIndex(of:))
         var manifestByNormalizedHref: [String: OPFDocument.ManifestItem] = [:]
         for item in opf.manifest.values {
@@ -296,7 +296,11 @@ struct EPUBParser: BookParser {
             language: opf.language,
             identifiers: opf.identifier.map { ["primary": $0] } ?? [:],
             publisher: opf.publisher,
-            publicationDate: opf.modifiedDate
+            publicationDate: opf.modifiedDate,
+            summary: opf.summary,
+            series: opf.series,
+            seriesPosition: opf.seriesPosition,
+            coverAssetID: coverID
         )
 
         var rawExtensions: [String: String] = [:]
@@ -652,6 +656,10 @@ private struct OPFDocument {
         let properties: Set<String>
     }
 
+    var summary: String?
+    var series: String?
+    var seriesPosition: Double?
+    var coverAssetID: String?
     var version: String?
     var title: String?
     var creators: [String]
@@ -673,6 +681,10 @@ private struct OPFDocument {
         parser.delegate = delegate
         if parser.parse() {
             return OPFDocument(
+                summary: delegate.summary,
+                series: delegate.series,
+                seriesPosition: delegate.seriesPosition,
+                coverAssetID: delegate.coverAssetID,
                 version: delegate.version,
                 title: delegate.title,
                 creators: delegate.creators,
@@ -694,6 +706,21 @@ private struct OPFDocument {
 }
 
 private final class OPFXMLDelegate: NSObject, XMLParserDelegate {
+    var summary: String?
+    var coverAssetID: String?
+    private var legacySeries: String?
+    private var legacyPosition: Double?
+    private var collections: [(id: String, name: String)] = []
+    private var collectionTypes: [String: String] = [:]
+    private var collectionPositions: [String: Double] = [:]
+    private var seriesCollection: (id: String, name: String)? {
+        collections.first { collectionTypes[$0.id]?.lowercased() == "series" }
+    }
+    var series: String? { seriesCollection?.name ?? legacySeries }
+    var seriesPosition: Double? {
+        if let item = seriesCollection { return collectionPositions[item.id] }
+        return legacyPosition
+    }
     var version: String?
     var title: String?
     var creators: [String] = []
@@ -712,6 +739,9 @@ private final class OPFXMLDelegate: NSObject, XMLParserDelegate {
     private var elementStack: [String] = []
     private var currentText = ""
     private var currentMetaProperty: String?
+    private var currentMetaID: String?
+    private var currentMetaTarget: String?
+    private var currentMetaContent: String?
 
     func parser(
         _: XMLParser,
@@ -762,6 +792,9 @@ private final class OPFXMLDelegate: NSObject, XMLParserDelegate {
 
         if local == "meta" {
             currentMetaProperty = attributeDict["property"] ?? attributeDict["name"]
+            currentMetaID = attributeDict["id"]
+            currentMetaTarget = attributeDict["refines"].map { $0.hasPrefix("#") ? String($0.dropFirst()) : $0 }
+            currentMetaContent = attributeDict["content"]
             if currentMetaProperty == "dcterms:modified", let content = attributeDict["content"] {
                 modifiedDate = content
             }
@@ -779,13 +812,22 @@ private final class OPFXMLDelegate: NSObject, XMLParserDelegate {
         qualifiedName _: String?
     ) {
         let local = localName(elementName)
-        let value = currentText.normalizedWhitespace()
+        let value = (local == "meta" ? (currentMetaContent ?? currentText) : currentText).normalizedWhitespace()
 
         if local == "meta", let property = currentMetaProperty, !value.isEmpty {
             switch property {
             case "dcterms:modified": modifiedDate = value
             case "rendition:layout": renditionLayout = value
             case "rendition:spread": renditionSpread = value
+            case "cover": coverAssetID = value
+            case "calibre:series": legacySeries = value
+            case "calibre:series_index": legacyPosition = validSeriesPosition(value)
+            case "belongs-to-collection":
+                if let id = currentMetaID { collections.append((id, value)) }
+            case "collection-type":
+                if let target = currentMetaTarget { collectionTypes[target] = value }
+            case "group-position":
+                if let target = currentMetaTarget { collectionPositions[target] = validSeriesPosition(value) }
             default: break
             }
             currentMetaProperty = nil
@@ -795,6 +837,8 @@ private final class OPFXMLDelegate: NSObject, XMLParserDelegate {
                 if title == nil { title = value }
             case "creator":
                 creators.append(value)
+            case "description":
+                if summary == nil { summary = value }
             case "language":
                 if language == nil { language = value }
             case "publisher":
@@ -808,8 +852,19 @@ private final class OPFXMLDelegate: NSObject, XMLParserDelegate {
             }
         }
 
+        if local == "meta" {
+            currentMetaProperty = nil
+            currentMetaID = nil
+            currentMetaTarget = nil
+            currentMetaContent = nil
+        }
         _ = elementStack.popLast()
         currentText = ""
+    }
+
+    private func validSeriesPosition(_ value: String) -> Double? {
+        guard let number = Double(value), number.isFinite, number >= 0, number <= 1_000_000 else { return nil }
+        return number
     }
 
     private func localName(_ name: String) -> String {

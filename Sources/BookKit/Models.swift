@@ -124,6 +124,10 @@ public struct Metadata: Sendable, Equatable {
     public var identifiers: [String: String]
     public var publisher: String?
     public var publicationDate: String?
+    public var summary: String?
+    public var series: String?
+    public var seriesPosition: Double?
+    public var coverAssetID: String?
 
     public init(
         title: String,
@@ -131,7 +135,11 @@ public struct Metadata: Sendable, Equatable {
         language: String? = nil,
         identifiers: [String: String] = [:],
         publisher: String? = nil,
-        publicationDate: String? = nil
+        publicationDate: String? = nil,
+        summary: String? = nil,
+        series: String? = nil,
+        seriesPosition: Double? = nil,
+        coverAssetID: String? = nil
     ) {
         self.title = title
         self.authors = authors
@@ -139,6 +147,10 @@ public struct Metadata: Sendable, Equatable {
         self.identifiers = identifiers
         self.publisher = publisher
         self.publicationDate = publicationDate
+        self.summary = summary
+        self.series = series
+        self.seriesPosition = seriesPosition.flatMap { $0.isFinite && $0 >= 0 && $0 <= 1_000_000 ? $0 : nil }
+        self.coverAssetID = coverAssetID
     }
 }
 
