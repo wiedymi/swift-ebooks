@@ -1,7 +1,6 @@
 # Working rules
 
-Keep replies short. Use ASD-STE100 Simplified
-Technical English.
+Keep replies short. Use ASD-STE100 Simplified Technical English.
 
 - Audit or review: inspect, reproduce, and report. Do not change files.
 - Fix or implement: complete the change and relevant checks within the requested scope.
