@@ -2,6 +2,11 @@ import Foundation
 
 #if canImport(MediaPlayer)
 import MediaPlayer
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
 #endif
 
 /// The lifecycle state of an audiobook playback session.
@@ -75,6 +80,7 @@ final class AudiobookPlayer {
     private var isPrepared = false
     private var lastPersistedTimestamp: Double?
     #if canImport(MediaPlayer)
+    private var artwork: MPMediaItemArtwork?
     private var remoteCommandTargets: [(command: MPRemoteCommand, token: Any)] = []
     #endif
 
@@ -124,6 +130,16 @@ final class AudiobookPlayer {
         let restored = await reader.position
         position = normalized(restored)
         try await loadTrack(at: position, shouldResumePlayback: false)
+        #if canImport(MediaPlayer)
+        if let data = (book.assets.first(where: { $0.id == book.metadata.coverAssetID })
+            ?? book.assets.first(where: { $0.mediaType.hasPrefix("image/") && ($0.id.localizedCaseInsensitiveContains("cover") || $0.href.localizedCaseInsensitiveContains("cover")) }))?.data {
+            #if canImport(UIKit)
+            if let image = UIImage(data: data) { artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image } }
+            #elseif canImport(AppKit)
+            if let image = NSImage(data: data) { artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image } }
+            #endif
+        }
+        #endif
         isPrepared = true
         status = .ready
         let snapshot = snapshot()
@@ -434,6 +450,7 @@ final class AudiobookPlayer {
         if let duration = snapshot.trackDuration {
             info[MPMediaItemPropertyPlaybackDuration] = duration
         }
+        if let artwork { info[MPMediaItemPropertyArtwork] = artwork }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
         #endif
     }
