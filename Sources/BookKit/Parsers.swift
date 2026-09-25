@@ -3,6 +3,13 @@ import Foundation
 public protocol BookParser: Sendable {
     var formats: Set<BookFormat> { get }
     func parse(source: BookSource, options: OpenOptions) async throws -> Book
+    func parse(loadedData: Data, source: BookSource, options: OpenOptions) async throws -> Book
+}
+
+public extension BookParser {
+    func parse(loadedData: Data, source: BookSource, options: OpenOptions) async throws -> Book {
+        try await parse(source: .data(loadedData, fileName: source.fileName), options: options)
+    }
 }
 
 public struct ParserRegistry: Sendable {

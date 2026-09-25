@@ -35,7 +35,11 @@ private enum KindlePublication {
         }
 
         let exth = EXTHMetadata.parse(record: container.records[0], header: header)
-        let textData = try decompressText(container: container, header: header)
+        let textData = try decompressText(
+            container: container,
+            header: header,
+            maxOutputBytes: options.maxResourceBytes
+        )
         let title = exth.title?.normalizedWhitespace().nonEmpty
             ?? header.fullName?.normalizedWhitespace().nonEmpty
             ?? container.databaseName.normalizedWhitespace().nonEmpty
@@ -109,7 +113,8 @@ private enum KindlePublication {
 
     private static func decompressText(
         container: PalmContainer,
-        header: KindleHeader
+        header: KindleHeader,
+        maxOutputBytes: Int
     ) throws -> Data {
         guard header.textRecordCount > 0,
               header.textRecordCount < container.records.count
@@ -123,6 +128,9 @@ private enum KindlePublication {
             )
         }
 
+        guard header.textLength <= maxOutputBytes else {
+            throw BookError.malformedDocument("Kindle text exceeds the configured resource limit")
+        }
         var output = Data()
         output.reserveCapacity(header.textLength)
         for index in 1...header.textRecordCount {
@@ -131,9 +139,13 @@ private enum KindlePublication {
                 flags: header.extraDataFlags
             )
             if header.compression == 1 {
+                guard record.count <= maxOutputBytes - output.count else {
+                    throw BookError.malformedDocument("Kindle text exceeds the configured resource limit")
+                }
                 output.append(record)
             } else {
-                output.append(try PalmDOC.decompress(record))
+                let decoded = try PalmDOC.decompress(record, maxOutputBytes: maxOutputBytes - output.count)
+                output.append(decoded)
             }
         }
         if output.count > header.textLength {
@@ -729,23 +741,32 @@ private struct EXTHMetadata {
 }
 
 private enum PalmDOC {
-    static func decompress(_ data: Data) throws -> Data {
+    static func decompress(_ data: Data, maxOutputBytes: Int) throws -> Data {
         let input = [UInt8](data)
         var output: [UInt8] = []
-        output.reserveCapacity(input.count * 2)
+        output.reserveCapacity(min(input.count, maxOutputBytes))
         var index = 0
+
+        func requireRoom(_ count: Int) throws {
+            guard count <= maxOutputBytes - output.count else {
+                throw BookError.malformedDocument("Kindle text exceeds the configured resource limit")
+            }
+        }
 
         while index < input.count {
             let byte = input[index]
             index += 1
             switch byte {
             case 0:
+                try requireRoom(1)
                 output.append(0)
             case 1...8:
                 let count = min(Int(byte), input.count - index)
+                try requireRoom(count)
                 output.append(contentsOf: input[index..<(index + count)])
                 index += count
             case 9...0x7f:
+                try requireRoom(1)
                 output.append(byte)
             case 0x80...0xbf:
                 guard index < input.count else {
@@ -758,10 +779,12 @@ private enum PalmDOC {
                 guard distance > 0, distance <= output.count else {
                     throw BookError.malformedDocument("Invalid PalmDOC back-reference")
                 }
+                try requireRoom(length)
                 for _ in 0..<length {
                     output.append(output[output.count - distance])
                 }
             default:
+                try requireRoom(2)
                 output.append(0x20)
                 output.append(byte ^ 0x80)
             }

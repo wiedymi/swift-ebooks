@@ -2,6 +2,83 @@ import XCTest
 @testable import BookKit
 
 final class AudiobookParserTests: XCTestCase {
+    func testLocalManifestEmbedsSiblingTrackAndRejectsExternalFile() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let audioURL = root.appendingPathComponent("track.mp3")
+        try AudioTestFixture.silentMP3.write(to: audioURL)
+        let manifestURL = root.appendingPathComponent("manifest.json")
+        let manifest = #"{"readingOrder":[{"href":"track.mp3","type":"audio/mpeg"}]}"#
+        try Data(manifest.utf8).write(to: manifestURL)
+
+        let book = try await Book.open(from: manifestURL)
+        XCTAssertEqual(book.assets.first?.data, AudioTestFixture.silentMP3)
+
+        let external = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension("mp3")
+        try AudioTestFixture.silentMP3.write(to: external)
+        defer { try? FileManager.default.removeItem(at: external) }
+        let unsafeManifest = #"{"readingOrder":[{"href":"\#(external.absoluteString)","type":"audio/mpeg"}]}"#
+        try Data(unsafeManifest.utf8).write(to: manifestURL)
+        do {
+            _ = try await Book.open(from: manifestURL)
+            XCTFail("Expected an external file rejection")
+        } catch let BookError.io(message) {
+            XCTAssertTrue(message.contains("outside the manifest directory"))
+        }
+
+        let linkURL = root.appendingPathComponent("linked.mp3")
+        try FileManager.default.createSymbolicLink(at: linkURL, withDestinationURL: external)
+        let linkedManifest = #"{"readingOrder":[{"href":"linked.mp3","type":"audio/mpeg"}]}"#
+        try Data(linkedManifest.utf8).write(to: manifestURL)
+        do {
+            _ = try await Book.open(from: manifestURL)
+            XCTFail("Expected a linked file rejection")
+        } catch let BookError.io(message) {
+            XCTAssertTrue(message.contains("outside the manifest directory"))
+        }
+
+        try Data(manifest.utf8).write(to: manifestURL)
+        do {
+            _ = try await Book.open(from: manifestURL, options: OpenOptions(maxResourceBytes: 8))
+            XCTFail("Expected a local track size rejection")
+        } catch let BookError.io(message) {
+            XCTAssertTrue(message.contains("size limit"))
+        }
+
+        let repeatedTracks = #"{"readingOrder":[{"href":"track.mp3","type":"audio/mpeg"},{"href":"track.mp3","type":"audio/mpeg"}]}"#
+        try Data(repeatedTracks.utf8).write(to: manifestURL)
+        do {
+            _ = try await Book.open(
+                from: manifestURL,
+                options: OpenOptions(maxArchiveUncompressedBytes: AudioTestFixture.silentMP3.count + 1)
+            )
+            XCTFail("Expected an aggregate audio size rejection")
+        } catch let BookError.invalidContainer(message) {
+            XCTAssertTrue(message.contains("configured size limit"))
+        }
+
+        do {
+            _ = try await Book.open(source: .data(Data(unsafeManifest.utf8), fileName: "manifest.json"))
+            XCTFail("Expected a file URL rejection without a local manifest")
+        } catch let BookError.io(message) {
+            XCTAssertTrue(message.contains("no local manifest directory"))
+        }
+
+        var directBook = book
+        directBook.readingOrder[0].href = external.absoluteString
+        directBook.assets[0].data = nil
+        let store = AudioResourceStore(book: directBook)
+        do {
+            _ = try await store.url(forTrackAt: 0)
+            XCTFail("Expected a direct file URL rejection")
+        } catch let BookError.missingAsset(message) {
+            XCTAssertTrue(message.contains("no embedded data"))
+        }
+    }
+
     func testParsesReadiumManifestMetadataTracksCoverAndTOC() async throws {
         let manifest = """
         {

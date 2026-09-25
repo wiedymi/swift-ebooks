@@ -434,6 +434,10 @@ presentation hints, diagnostics, and stable identifiers.
 `ParserRegistry` and `BookParser` remain available for overriding recognized
 format parsers. Fixed-page/PDF adapters and specialized views remain advanced
 surfaces for hosts that intentionally replace the default presentation.
+`Book.open` passes checked bytes and the original source to
+`parse(loadedData:source:options:)`. The default method calls `parse(source:options:)`
+with in-memory data. A parser can override it when relative resources need the
+original source URL.
 
 ## Diagnostics
 

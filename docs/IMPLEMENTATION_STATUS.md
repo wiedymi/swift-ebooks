@@ -37,7 +37,7 @@ See [contracts](SPEC.md), [architecture](ARCHITECTURE.md), and
 | TXT | UTF-8/UTF-16 decoding, escaped paragraph conversion, stable ID, and reflow rendering. | It is a convenience single-document adapter; arbitrary legacy encodings and automatic chapter inference are not implemented. |
 | HTML | Safe single-document import, heading IDs, nested TOC, and normal native link policy. | Sibling-file packaging and a general website downloader are not provided. Active content is sanitized. |
 | Markdown | Headings/nested TOC, paragraphs, lists, links, emphasis, quotes, fenced/inline code, and safe HTML output. | It is a focused reader adapter, not a CommonMark conformance claim or Markdown authoring system. |
-| Audiobook | W3C/Readium manifests, root-manifest ZIP packages, standalone MP3/M4A/M4B/AAC, metadata/artwork/chapters, media fragments, AVFoundation playback, rates, persistence, bookmarks, Now Playing, and remote commands. | Protected audio is rejected. Remote manifest tracks require explicit `allowsNetwork` and are rejected on visionOS because protected-content status cannot be verified there; advanced streaming/download management is host-owned. |
+| Audiobook | W3C/Readium manifests, root-manifest ZIP packages, standalone MP3/M4A/M4B/AAC, metadata/artwork/chapters, media fragments, AVFoundation playback, rates, persistence, bookmarks, Now Playing, and remote commands. | Protected audio is rejected. Local manifest tracks must stay inside the manifest directory and fit the configured resource and total size limits. Remote manifest tracks require explicit `allowsNetwork` and are rejected on visionOS because protected-content status cannot be verified there; advanced streaming/download management is host-owned. |
 
 ## Remaining compatibility work
 

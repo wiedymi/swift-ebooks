@@ -376,10 +376,7 @@ public extension Book {
         }
 
         do {
-            return try await parser.parse(
-                source: .data(data, fileName: source.fileName),
-                options: options
-            )
+            return try await parser.parse(loadedData: data, source: source, options: options)
         } catch {
             throw BookError.from(error)
         }

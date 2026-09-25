@@ -7,6 +7,10 @@ struct AudiobookParser: BookParser {
 
     public func parse(source: BookSource, options: OpenOptions) async throws -> Book {
         let data = try await source.loadData(options: options)
+        return try await parse(loadedData: data, source: source, options: options)
+    }
+
+    public func parse(loadedData data: Data, source: BookSource, options: OpenOptions) async throws -> Book {
         if data.starts(with: Data([0x50, 0x4b, 0x03, 0x04])) {
             return try parsePackage(data, source: source, options: options)
         }
@@ -43,7 +47,7 @@ struct AudiobookParser: BookParser {
         _ data: Data,
         source: BookSource,
         container: SafeZIPArchive?,
-        options _: OpenOptions,
+        options: OpenOptions,
         packageData: Data? = nil
     ) throws -> Book {
         let object: Any
@@ -68,6 +72,9 @@ struct AudiobookParser: BookParser {
         } else {
             throw BookError.malformedDocument("Audiobook readingOrder is invalid")
         }
+        guard readingLinks.count <= options.maxArchiveEntries else {
+            throw BookError.invalidContainer("Audiobook has too many tracks")
+        }
 
         try validateDRMFree(links: readingLinks, root: root)
         let sourceBaseURL: URL? = {
@@ -77,6 +84,7 @@ struct AudiobookParser: BookParser {
         var diagnostics: [BookDiagnostic] = []
         var assets: [Asset] = []
         var chapters: [Chapter] = []
+        var totalEmbeddedBytes = 0
 
         for (index, link) in readingLinks.enumerated() {
             guard let rawHref = string(link["href"]) ?? string(link["url"]), !rawHref.isEmpty else {
@@ -112,8 +120,27 @@ struct AudiobookParser: BookParser {
                     throw BookError.missingAsset("Packaged audiobook is missing \(resourcePath)")
                 }
                 payload = embedded
+            } else if let trackURL = URL(string: href), trackURL.isFileURL {
+                guard let sourceBaseURL, sourceBaseURL.isFileURL else {
+                    throw BookError.io("Audiobook file track has no local manifest directory")
+                }
+                let rootPath = sourceBaseURL.standardizedFileURL.resolvingSymlinksInPath().path
+                let filePath = trackURL.standardizedFileURL.resolvingSymlinksInPath().path
+                guard filePath.hasPrefix(rootPath + "/") else {
+                    throw BookError.io("Audiobook file track is outside the manifest directory")
+                }
+                payload = try options.fileAccess.withReadAccess(to: trackURL) { scopedURL in
+                    try BoundedDataReader.file(scopedURL, limit: options.maxResourceBytes)
+                }
             } else {
                 payload = nil
+            }
+            if let payload {
+                let (nextTotal, overflow) = totalEmbeddedBytes.addingReportingOverflow(payload.count)
+                guard !overflow, nextTotal <= options.maxArchiveUncompressedBytes else {
+                    throw BookError.invalidContainer("Audiobook resources exceed the configured size limit")
+                }
+                totalEmbeddedBytes = nextTotal
             }
             let resourceID = "audio-track-\(index + 1)"
             let title = string(link["title"])
@@ -157,6 +184,9 @@ struct AudiobookParser: BookParser {
         }
 
         let resourceLinks = root["resources"] as? [[String: Any]] ?? []
+        guard resourceLinks.count <= options.maxArchiveEntries - readingLinks.count else {
+            throw BookError.invalidContainer("Audiobook has too many resources")
+        }
         try validateDRMFree(links: resourceLinks, root: [:])
         for (index, link) in resourceLinks.enumerated() {
             guard let rawHref = string(link["href"]) ?? string(link["url"]) else { continue }
@@ -165,6 +195,13 @@ struct AudiobookParser: BookParser {
                 ?? string(link["encodingFormat"])
                 ?? inferredMediaType(from: rawHref)
             let payload = try container?.data(at: pathWithoutMediaFragment(rawHref))
+            if let payload {
+                let (nextTotal, overflow) = totalEmbeddedBytes.addingReportingOverflow(payload.count)
+                guard !overflow, nextTotal <= options.maxArchiveUncompressedBytes else {
+                    throw BookError.invalidContainer("Audiobook resources exceed the configured size limit")
+                }
+                totalEmbeddedBytes = nextTotal
+            }
             assets.append(
                 Asset(
                     id: "audiobook-resource-\(index + 1)",

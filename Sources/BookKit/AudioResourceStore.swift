@@ -69,11 +69,7 @@ actor AudioResourceStore {
             return url
             #endif
         }
-        guard scheme == "file" else {
-            throw BookError.missingAsset("Unsupported audio URL scheme: \(scheme)")
-        }
-        try AudioProtectionProbe.validateFile(at: url)
-        return url
+        throw BookError.missingAsset("Audio track has no embedded data or permitted network URL: \(scheme)")
     }
 
     public func removeAll() throws {
