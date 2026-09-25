@@ -9,7 +9,7 @@ import SwiftUI
 /// PDFKit handles internal page actions. URL annotations are intercepted and
 /// reported through `onLinkActivated`; BookKit never opens them implicitly.
 public struct PDFBookView: View {
-    private let content: _PDFViewContainer
+    private var content: _PDFViewContainer
 
     public init(
         data: Data,
@@ -33,6 +33,12 @@ public struct PDFBookView: View {
     }
 
     public var body: some View { content }
+
+    func nativeSelectionMenu(_ menu: @escaping @MainActor () -> ReaderSelectionMenu?) -> Self {
+        var view = self
+        view.content.selectionMenu = menu
+        return view
+    }
 
 }
 
@@ -143,6 +149,7 @@ private typealias PDFPlatformViewRepresentable = NSViewRepresentable
 #endif
 
 private struct _PDFViewContainer: PDFPlatformViewRepresentable {
+    var selectionMenu: (@MainActor () -> ReaderSelectionMenu?)?
     let data: Data
     let pageIndex: Int
     let onPageChanged: ((Int) -> Void)?
@@ -165,7 +172,7 @@ private struct _PDFViewContainer: PDFPlatformViewRepresentable {
     #endif
 
     private func makeView(coordinator: _PDFViewCoordinator) -> PDFView {
-        let view = PDFView()
+        let view = ReaderSelectionPDFView()
         view.autoScales = true
         view.displayMode = .singlePage
         configureView?(view)
@@ -174,6 +181,7 @@ private struct _PDFViewContainer: PDFPlatformViewRepresentable {
     }
 
     private func update(_ view: PDFView, coordinator: _PDFViewCoordinator) {
+        (view as? ReaderSelectionPDFView)?.selectionMenu = selectionMenu
         coordinator.onSelectionChanged = onSelectionChanged
         coordinator.onDecorationTapped = onDecorationTapped
         coordinator.configure(view: view, onPageChanged: onPageChanged, onLinkActivated: onLinkActivated)

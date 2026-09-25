@@ -149,7 +149,8 @@ public final class BookReader: ObservableObject {
         #if canImport(WebKit)
         let bridge = presentationEngine.requiresReflowBridge
             ? WebViewReflowBridge(
-                configuration: WebViewReflowConfiguration(plugins: configuration.plugins)
+                configuration: WebViewReflowConfiguration(plugins: configuration.plugins,
+                    customizeWebViewConfiguration: configuration.configureWebViewConfiguration)
             )
             : nil
         if let bridge { configuration.configureWebView?(bridge.webView) }
@@ -243,6 +244,7 @@ public final class BookReader: ObservableObject {
     /// - Parameter removesTemporaryAudio: Whether extracted audiobook files
     ///   should be removed. The default is `true`.
     public func shutdown(removesTemporaryAudio: Bool = true) async {
+        await renderer.cancelPageTurn()
         await speechController?.shutdown()
         viewportTask?.cancel()
         do { try await saveState() } catch { report(error) }

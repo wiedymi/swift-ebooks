@@ -114,18 +114,49 @@ enum ResolveStyles {
           --bookkit-bg: \(theme.backgroundColor);
           --bookkit-fg: \(theme.textColor);
           --bookkit-link: \(theme.linkColor);
+          --bookkit-selection-bg: \(theme.selectionBackgroundColor);
+          --bookkit-selection-fg: \(theme.selectionTextColor);
+          --bookkit-font-family: \(typography.cssFontFamilies);
+          --bookkit-font-size: \(typography.fontSize)px;
+          --bookkit-line-height: \(typography.lineHeight);
+          --bookkit-letter-spacing: \(typography.letterSpacing)px;
         }
         html, body {
           margin: 0;
           padding: 0;
           background: var(--bookkit-bg);
           color: var(--bookkit-fg);
-          font-family: \(typography.fontFamily);
-          font-size: \(typography.fontSize)px;
-          line-height: \(typography.lineHeight);
-          letter-spacing: \(typography.letterSpacing)px;
+          font-family: var(--bookkit-font-family);
+          font-size: var(--bookkit-font-size);
+          line-height: var(--bookkit-line-height);
+          letter-spacing: var(--bookkit-letter-spacing);
         }
         a { color: var(--bookkit-link); }
+        ::selection {
+          background-color: var(--bookkit-selection-bg) !important;
+          color: var(--bookkit-selection-fg) !important;
+          -webkit-text-fill-color: var(--bookkit-selection-fg) !important;
+          text-shadow: none !important;
+        }
+        html[data-bookkit-layout="reflowable"] body {
+          overflow-wrap: anywhere;
+          -webkit-text-size-adjust: 100%;
+        }
+        html[data-bookkit-layout="reflowable"] img,
+        html[data-bookkit-layout="reflowable"] svg,
+        html[data-bookkit-layout="reflowable"] video {
+          max-width: 100%;
+          max-height: calc(100vh - 48px);
+          object-fit: contain;
+          break-inside: avoid;
+        }
+        html[data-bookkit-layout="reflowable"] body * {
+          box-sizing: border-box;
+          max-width: 100% !important;
+          min-width: 0 !important;
+        }
+        html[data-bookkit-layout="reflowable"] pre { white-space: pre-wrap; }
+        html[data-bookkit-layout="reflowable"] table { max-width: 100%; table-layout: fixed; }
         \(baseCSS)
         \(theme.customCSS)
         """

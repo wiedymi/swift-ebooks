@@ -47,6 +47,10 @@ protection status before playback where the platform supports it.
 | PDF | `PDFParser` retains the document asset; `PDFBookView` preserves internal actions and reports external links to host policy. |
 | Audio | `AudiobookTimeline` maps clip times and weighted progress; `AudiobookPlayer` owns playback, remote commands, and cleanup. |
 
+`ReflowPageTurnRuntime` owns transient snapshots for paginated next/previous
+turns. `PageTurnSurface` draws slide or paper-curl frames with Core Image and
+Metal; it does not hold navigation state or change the document layout.
+
 The reflow bridge uses non-persistent WebKit storage and an isolated client
 script world. Publication JavaScript is disabled. Text filtering removes active
 markup; WebKit content rules block network resources in offline mode, including

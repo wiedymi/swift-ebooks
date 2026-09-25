@@ -5,19 +5,44 @@ public enum ReadingMode: String, Sendable, Equatable, Hashable, Codable {
     case scroll
 }
 
+public enum PageColumns: String, Sendable, Equatable, Hashable, Codable {
+    case single, automatic
+}
+
+public enum PageTransition: String, Sendable, Equatable, Hashable, Codable {
+    case none, slide, curl
+}
+
 public struct ReaderPreferences: Sendable, Equatable, Hashable, Codable {
     public var readingMode: ReadingMode
     public var theme: Theme
     public var typography: Typography
+    public var pageColumns: PageColumns
+    public var pageTransition: PageTransition
 
     public init(
         readingMode: ReadingMode = .scroll,
         theme: Theme = .light,
-        typography: Typography = .default
+        typography: Typography = .default,
+        pageColumns: PageColumns = .single,
+        pageTransition: PageTransition = .slide
     ) {
         self.readingMode = readingMode
         self.theme = theme
         self.typography = typography
+        self.pageColumns = pageColumns
+        self.pageTransition = pageTransition
+    }
+
+    private enum CodingKeys: String, CodingKey { case readingMode, theme, typography, pageColumns, pageTransition }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        readingMode = try values.decode(ReadingMode.self, forKey: .readingMode)
+        theme = try values.decode(Theme.self, forKey: .theme)
+        typography = try values.decode(Typography.self, forKey: .typography)
+        pageColumns = try values.decodeIfPresent(PageColumns.self, forKey: .pageColumns) ?? .single
+        pageTransition = try values.decodeIfPresent(PageTransition.self, forKey: .pageTransition) ?? .slide
     }
 
     public static let `default` = ReaderPreferences()
@@ -165,7 +190,7 @@ public struct DecorationStyle: Sendable, Equatable, Hashable, Codable {
     public static func `default`(for group: DecorationGroup) -> DecorationStyle {
         switch group {
         case .highlight:
-            return DecorationStyle(backgroundColor: "#fff5a8", textColor: nil, underlineColor: "#f7d547")
+            return DecorationStyle(backgroundColor: "#fff5a8", textColor: "#1a1a1a", underlineColor: "#f7d547")
         case .search:
             return DecorationStyle(backgroundColor: "#ffe58f", textColor: "#1a1a1a", underlineColor: "#ffb300")
         case .tts:

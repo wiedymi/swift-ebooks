@@ -24,6 +24,7 @@ final class ContentRenderer: Navigator {
     private let maxHistoryDepth = 128
 
     private var lastRenderContext: RenderContext?
+    private var pageTurnTask: Task<Void, Error>?
     private var autosaveTask: Task<Void, Never>?
     private var layoutEventTask: Task<Void, Never>?
     private var currentChapterIndex: Int = 0
@@ -34,6 +35,7 @@ final class ContentRenderer: Navigator {
     private var accessibilitySettings: ReaderAccessibilitySettings = .default
 
     func followText(_ locator: Locator) async throws {
+        await cancelPageTurn()
         try await navigateWithoutHistory(to: locator.position)
         eventHub.yield(.locatorChanged(await currentLocator()))
     }
@@ -136,6 +138,7 @@ final class ContentRenderer: Navigator {
     }
 
     deinit {
+        pageTurnTask?.cancel()
         layoutEventTask?.cancel()
         autosaveTask?.cancel()
     }
@@ -147,6 +150,7 @@ final class ContentRenderer: Navigator {
         typography: Typography = .default,
         baseCSS: String = ""
     ) async throws {
+        await cancelPageTurn()
         var nextPreferences = await reader.currentPreferences()
         nextPreferences.theme = theme
         nextPreferences.typography = typography
@@ -161,35 +165,60 @@ final class ContentRenderer: Navigator {
         )
     }
 
-    func nextPage() async throws {
-        let before = await currentPosition()
-        let target = nextPageTarget(from: before)
-        guard target != before else { return }
-        try await navigateWithoutHistory(to: target)
-        let after = await currentPosition()
-        if after != before {
-            eventHub.yield(.locatorChanged(book.locator(for: after)))
-        }
+    func nextPage() async throws { try await turnPage(forward: true) }
+    func previousPage() async throws { try await turnPage(forward: false) }
+
+    func cancelPageTurn() async {
+        pageTurnTask?.cancel()
+        reflowLayout?.cancelPageTurn()
+        _ = try? await pageTurnTask?.value
     }
 
-    func previousPage() async throws {
-        let before = await currentPosition()
-        let target = previousPageTarget(from: before)
-        guard target != before else { return }
-        try await navigateWithoutHistory(to: target)
-        let after = await currentPosition()
-        if after != before {
-            eventHub.yield(.locatorChanged(book.locator(for: after)))
+    private func turnPage(forward: Bool) async throws {
+        // Coalesce input while a page is being captured and committed. The visual
+        // animation does not hold this task, so another turn can interrupt it.
+        if let pageTurnTask {
+            do { try await pageTurnTask.value } catch is CancellationError {}
+            return
+        }
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            try Task.checkCancellation()
+            let before = await currentPosition()
+            let target = forward ? nextPageTarget(from: before) : previousPageTarget(from: before)
+            guard target != before else { return }
+            let preferences = await reader.currentPreferences()
+            let transition: PageTransition = effectiveReadingMode(preferences: preferences) == .paginated
+                && !accessibilitySettings.prefersReducedMotion ? preferences.pageTransition : .none
+            if let layout = reflowLayout {
+                try await layout.turnPage(transition: transition, forward: forward) {
+                    try Task.checkCancellation()
+                    try await self.navigateWithoutHistory(to: target)
+                }
+            } else { try await navigateWithoutHistory(to: target) }
+            let after = await currentPosition()
+            if after != before { eventHub.yield(.locatorChanged(book.locator(for: after))) }
+        }
+        pageTurnTask = task
+        defer { pageTurnTask = nil }
+        do {
+            try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: { task.cancel() }
+        } catch is CancellationError {
+            // A jump, preference change, or shutdown superseded this page turn.
         }
     }
 
     func go(to position: Position) async throws {
+        await cancelPageTurn()
         try await navigateWithoutHistory(to: position)
         let locator = await currentLocator()
         eventHub.yield(.locatorChanged(locator))
     }
 
     func go(to locator: Locator) async throws {
+        await cancelPageTurn()
         let before = await currentPosition()
         try await navigateWithoutHistory(to: locator.position)
         let after = await currentPosition()
@@ -207,6 +236,7 @@ final class ContentRenderer: Navigator {
     }
 
     func goBack() async throws -> Locator? {
+        await cancelPageTurn()
         guard let target = backHistory.popLast() else {
             return nil
         }
@@ -226,6 +256,7 @@ final class ContentRenderer: Navigator {
     }
 
     func goForward() async throws -> Locator? {
+        await cancelPageTurn()
         guard let target = forwardHistory.popLast() else {
             return nil
         }
@@ -358,6 +389,7 @@ final class ContentRenderer: Navigator {
     }
 
     func setPreferences(_ preferences: ReaderPreferences) async throws {
+        await cancelPageTurn()
         try await reader.setPreferences(preferences)
         eventHub.yield(.preferencesChanged(preferences))
 
@@ -368,6 +400,7 @@ final class ContentRenderer: Navigator {
 
         try await layout.setTheme(preferences.theme)
         try await layout.setTypography(preferences.typography)
+        try await layout.setPageColumns(preferences.pageColumns)
         try await layout.setReadingMode(effectiveReadingMode(preferences: preferences))
         try await layout.measurePages()
 
@@ -402,6 +435,7 @@ final class ContentRenderer: Navigator {
     }
 
     func setAccessibility(_ settings: ReaderAccessibilitySettings) async throws {
+        await cancelPageTurn()
         accessibilitySettings = settings
         eventHub.yield(.accessibilityChanged(settings))
 
@@ -433,6 +467,9 @@ final class ContentRenderer: Navigator {
             normalized.group = group
             if normalized.style == DecorationStyle() {
                 normalized.style = .default(for: group)
+            }
+            if normalized.style.textColor == nil, let background = normalized.style.backgroundColor {
+                normalized.style.textColor = ReaderColorContrast.foreground(on: background)
             }
             return normalized
         }
@@ -586,6 +623,7 @@ final class ContentRenderer: Navigator {
 
             let effectiveMode = effectiveReadingMode(preferences: preferences)
             try await layout.setAccessibility(accessibilitySettings)
+            try await layout.setPageColumns(preferences.pageColumns)
             try await layout.setReadingMode(effectiveMode)
             try await applyDecorationsForCurrentChapter()
 
@@ -949,7 +987,9 @@ final class ContentRenderer: Navigator {
             let mediaType = asset.mediaType.isEmpty ? "application/octet-stream" : asset.mediaType
             let dataURL = "data:\(mediaType);base64,\(data.base64EncodedString())"
             let quote = quotedWithDouble ? "\"" : "'"
-            output.replaceSubrange(fullRange, with: "\(attribute)=\(quote)\(dataURL)\(quote)")
+            let imageID = mediaType.lowercased().hasPrefix("image/")
+                ? " data-bookkit-image=\(quote)\(Data(asset.id.utf8).base64EncodedString())\(quote)" : ""
+            output.replaceSubrange(fullRange, with: "\(attribute)=\(quote)\(dataURL)\(quote)\(imageID)")
         }
 
         return output

@@ -91,6 +91,12 @@ final class ReflowLayout {
         try await bridge.measurePages()
     }
 
+    func turnPage(transition: PageTransition, forward: Bool, operation: @MainActor () async throws -> Void) async throws {
+        try await bridge.turnPage(transition: transition, forward: forward, operation: operation)
+    }
+
+    func cancelPageTurn() { bridge.cancelPageTurn() }
+
     public func goToText(_ range: ReaderTextRange) async throws -> Double? {
         guard let progression = try await bridge.goToText(range) else { return nil }
         var position = lastPosition ?? Position(spineIndex: currentSpineIndex, progression: progression)
@@ -127,6 +133,10 @@ final class ReflowLayout {
         var position = lastPosition ?? Position(spineIndex: currentSpineIndex, progression: 0)
         position.progression = progression
         lastPosition = position
+    }
+
+    public func setPageColumns(_ columns: PageColumns) async throws {
+        try await bridge.setPageColumns(columns)
     }
 
     public func setReadingMode(_ mode: ReadingMode) async throws {

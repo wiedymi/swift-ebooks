@@ -187,10 +187,17 @@
                     const mark = document.createElement('span');
                     mark.setAttribute('data-bookkit-text-mark', '');
                     mark.__bookkitMarks = active.map(item => item.decoration);
+                    if (mark.__bookkitMarks.some(item => item.group === 'highlight')) {
+                      mark.setAttribute('role', 'button');
+                      mark.tabIndex = 0;
+                    }
                     for (const { decoration } of active) {
                       const style = decoration.style || {};
-                      if (style.backgroundColor) mark.style.backgroundColor = style.backgroundColor;
-                      if (style.textColor) mark.style.color = style.textColor;
+                      if (style.backgroundColor) mark.style.setProperty('background-color', style.backgroundColor, 'important');
+                      if (style.textColor) {
+                        mark.style.setProperty('color', style.textColor, 'important');
+                        mark.style.setProperty('-webkit-text-fill-color', style.textColor, 'important');
+                      }
                       if (style.underlineColor) { mark.style.textDecoration = 'underline'; mark.style.textDecorationColor = style.underlineColor; }
                     }
                     mark.appendChild(text); fragment.appendChild(mark);

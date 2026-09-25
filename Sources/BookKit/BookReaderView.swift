@@ -21,17 +21,23 @@ public struct BookReaderView: View {
     @Environment(\.scenePhase) private var scenePhase
     private let pageTurnGesture: ReaderPageTurnGesture
     private let observesSystemAccessibility: Bool
+    private let onCenterTap: (() -> Void)?
     private var fixedOverlay: (FixedPageOverlayContext) -> AnyView = { _ in AnyView(EmptyView()) }
+    private var textMagnificationRange: ClosedRange<Double>?
+    private var nativeSelectionActions: [ReaderSelectionMenuAction] = []
+    private var onImageTapped: ((Asset) -> Void)?
+    private var onDecorationTapped: ((DecorationTapEvent) -> Void)?
     private var selectionContent: ((ReaderSelection) -> AnyView)?
     #if canImport(PDFKit) && !os(tvOS)
     private var configurePDF: (@MainActor (PDFView) -> Void)?
     #endif
 
     public init(reader: BookReader, pageTurnGesture: ReaderPageTurnGesture = .automatic,
-                observesSystemAccessibility: Bool = true) {
+                observesSystemAccessibility: Bool = true, onCenterTap: (() -> Void)? = nil) {
         self.reader = reader
         self.pageTurnGesture = pageTurnGesture
         self.observesSystemAccessibility = observesSystemAccessibility
+        self.onCenterTap = onCenterTap
     }
 
     /// Adds app-defined controls while preserving the system copy menu.
@@ -39,6 +45,41 @@ public struct BookReaderView: View {
         var view = self
         view.selectionContent = { AnyView(actions($0)) }
         return view
+    }
+
+    /// Adds actions to the native reflow and PDF text selection menus.
+    public func selectionMenuActions(_ actions: [ReaderSelectionMenuAction]) -> Self {
+        var view = self
+        view.nativeSelectionActions = actions
+        return view
+    }
+
+    /// Replaces native page zoom with live text resizing in reflowable books.
+    public func textMagnification(fontSizeRange: ClosedRange<Double>) -> Self {
+        var view = self
+        view.textMagnificationRange = fontSizeRange
+        return view
+    }
+
+    public func onDecorationTap(_ action: @escaping (DecorationTapEvent) -> Void) -> Self {
+        var view = self
+        view.onDecorationTapped = action
+        return view
+    }
+
+    /// Opens embedded, unlinked images through host UI. Linked images retain navigation.
+    /// Without a handler, image taps keep the normal reader tap behavior.
+    public func onImageTap(_ action: @escaping (Asset) -> Void) -> Self {
+        var view = self
+        view.onImageTapped = action
+        return view
+    }
+
+    private var selectionMenu: @MainActor () -> ReaderSelectionMenu? {
+        { [weak reader, nativeSelectionActions] in
+            guard let selection = reader?.selection, !nativeSelectionActions.isEmpty else { return nil }
+            return ReaderSelectionMenu(selection: selection, actions: nativeSelectionActions)
+        }
     }
 
     public func fixedPageOverlay<Overlay: View>(@ViewBuilder _ overlay: @escaping (FixedPageOverlayContext) -> Overlay) -> Self {
@@ -58,6 +99,26 @@ public struct BookReaderView: View {
 
     public var body: some View {
         content
+            .task {
+                for await event in reader.events {
+                    guard !Task.isCancelled else { return }
+                    if case let .decorationTapped(event) = event { onDecorationTapped?(event) }
+                    if case let .bridgeMessage(name, .object(payload)) = event,
+                       name == "bookkit.tap", case let .number(x)? = payload["x"] {
+                        if let onImageTapped,
+                           case let .string(encodedID)? = payload["imageID"],
+                           let data = Data(base64Encoded: encodedID),
+                           let id = String(data: data, encoding: .utf8),
+                           let asset = reader.book.assets.last(where: {
+                               $0.id == id && $0.mediaType.lowercased().hasPrefix("image/") && $0.data?.isEmpty == false
+                           }) {
+                            onImageTapped(asset)
+                        } else {
+                            handleTap(horizontalFraction: x)
+                        }
+                    }
+                }
+            }
             .overlay(alignment: .bottom) {
                 if let selection = reader.selection, let selectionContent {
                     selectionContent(selection)
@@ -107,13 +168,27 @@ public struct BookReaderView: View {
         #if canImport(WebKit)
         if let bridge = reader.reflowBridge {
             GeometryReader { geometry in
-                pageSwipe(
-                    ReflowBookView(bridge: bridge)
+                let content = pageSwipe(
+                    ReflowBookView(bridge: bridge, selectionMenu: selectionMenu,
+                        allowsPageZoom: textMagnificationRange == nil || reader.book.presentation.layout != .reflowable)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .task(id: textMagnificationRange == nil || reader.book.presentation.layout != .reflowable) {
+                            do {
+                                try await bridge.setPageZoomAllowed(textMagnificationRange == nil || reader.book.presentation.layout != .reflowable)
+                            } catch is CancellationError { }
+                            catch { reader.report(error) }
+                        }
                         .task(id: geometry.size) {
                             reader.updateViewport(size: geometry.size)
                         }
                 )
+                #if !os(tvOS)
+                if let range = textMagnificationRange, reader.book.presentation.layout == .reflowable {
+                    content.modifier(ReaderTextMagnification(reader: reader, range: range))
+                } else { content }
+                #else
+                content
+                #endif
             }
         } else {
             unavailableView("The WebKit reader could not be created.")
@@ -124,7 +199,7 @@ public struct BookReaderView: View {
     }
 
     private var fixedPageView: some View {
-        pageSwipe(
+        pageTap(pageSwipe(
             FixedPageBookView(
                 book: reader.book,
                 pageIndex: reader.position.spineIndex,
@@ -142,14 +217,14 @@ public struct BookReaderView: View {
                 overlay: fixedOverlay
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-        )
+        ))
     }
 
     @ViewBuilder
     private var pdfView: some View {
         if let data = reader.book.assets.first(where: { $0.id == "pdf-document" })?.data {
             #if canImport(PDFKit) && !os(tvOS)
-            PDFBookView(
+            pageTap(PDFBookView(
                 data: data,
                 pageIndex: reader.position.spineIndex,
                 onPageChanged: { index in
@@ -172,7 +247,8 @@ public struct BookReaderView: View {
                 onDecorationTapped: { reader.eventHub.yield(.decorationTapped($0)) },
                 onError: { reader.report($0) }
             )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .nativeSelectionMenu(selectionMenu)
+            .frame(maxWidth: .infinity, maxHeight: .infinity), ignoresPDFDecorations: true)
             #else
             pdfTextFallback
             #endif
@@ -213,6 +289,52 @@ public struct BookReaderView: View {
         #else
         content.simultaneousGesture(pageSwipeGesture, including: allowsPageSwipe ? .all : .subviews)
         #endif
+    }
+
+    @ViewBuilder
+    private func pageTap<Content: View>(_ content: Content, ignoresPDFDecorations: Bool = false) -> some View {
+        #if os(tvOS)
+        content
+        #else
+        GeometryReader { geometry in
+            content.simultaneousGesture(SpatialTapGesture().onEnded { value in
+                #if canImport(PDFKit)
+                if ignoresPDFDecorations, hitsPDFDecoration(at: value.location) { return }
+                #endif
+                handleTap(horizontalFraction: value.location.x / max(geometry.size.width, 1))
+            })
+        }
+        #endif
+    }
+
+    #if canImport(PDFKit) && !os(tvOS)
+    private func hitsPDFDecoration(at point: CGPoint) -> Bool {
+        guard let view = reader.pdfView else { return false }
+        var point = point
+        #if os(macOS)
+        if !view.isFlipped { point.y = view.bounds.height - point.y }
+        #endif
+        guard let page = view.page(for: point, nearest: false) else { return false }
+        let pagePoint = view.convert(point, to: page)
+        return page.annotations.contains { annotation in
+            annotation.bounds.contains(pagePoint)
+                && annotation.value(forAnnotationKey: PDFAnnotationKey(rawValue: "BookKitDecorationGroup")) as? String == DecorationGroup.highlight.rawValue
+        }
+    }
+    #endif
+
+    private func handleTap(horizontalFraction: Double) {
+        guard horizontalFraction.isFinite, reader.selection == nil,
+              !reader.accessibility.isVoiceOverEnabled else { return }
+        guard allowsPageSwipe, horizontalFraction < 0.25 || horizontalFraction > 0.75 else {
+            onCenterTap?()
+            return
+        }
+        let next = reader.book.presentation.readingProgression == .rightToLeft
+            ? horizontalFraction < 0.25 : horizontalFraction > 0.75
+        reader.perform { reader in
+            if next { try await reader.next() } else { try await reader.previous() }
+        }
     }
 
     private var allowsPageSwipe: Bool {

@@ -16,12 +16,15 @@ enum ReflowBridgeEvent: Sendable, Equatable {
 protocol ReflowBridge: AnyObject {
     var events: AsyncStream<ReflowBridgeEvent> { get }
 
+    func turnPage(transition: PageTransition, forward: Bool, operation: @MainActor () async throws -> Void) async throws
+    func cancelPageTurn()
     func setContent(html: String, css: String, viewport: Viewport) async throws
     func goToText(_ range: ReaderTextRange) async throws -> Double?
     func clearSelection() async throws
     func capturePosition() async throws -> Position?
     func goToAnchor(_ id: String) async throws
     func goToProgression(_ value: Double) async throws
+    func setPageColumns(_ columns: PageColumns) async throws
     func setReadingMode(_ mode: ReadingMode) async throws
     func setTheme(_ theme: Theme) async throws
     func setTypography(_ typography: Typography) async throws
@@ -34,6 +37,9 @@ protocol ReflowBridge: AnyObject {
 }
 
 extension ReflowBridge {
+    func turnPage(transition: PageTransition, forward: Bool, operation: @MainActor () async throws -> Void) async throws { try await operation() }
+    func cancelPageTurn() {}
+    func setPageColumns(_ columns: PageColumns) async throws {}
     func goToText(_: ReaderTextRange) async throws -> Double? { nil }
     func clearSelection() async throws {}
     func capturePosition() async throws -> Position? { nil }

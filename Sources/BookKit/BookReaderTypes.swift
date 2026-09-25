@@ -124,6 +124,9 @@ public extension BookReader {
         public var speechEngine: (any ReaderSpeechEngine)?
 
         #if canImport(WebKit)
+        /// Installs trusted host resource handlers before the web view is created.
+        /// Preserve the reader's script, navigation, and network restrictions.
+        public var configureWebViewConfiguration: (@MainActor (WKWebViewConfiguration) -> Void)?
         /// Runs once after creation. Preserve the session's navigation delegate and scripts.
         public var configureWebView: (@MainActor (WKWebView) -> Void)?
         #endif

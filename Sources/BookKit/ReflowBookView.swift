@@ -4,38 +4,24 @@ import Foundation
 import SwiftUI
 import WebKit
 
-/// Internal SwiftUI container for the session-owned reflow web view.
+/// Internal SwiftUI container for the session-owned web view and page overlay.
 struct ReflowBookView: View {
-    private let webView: WKWebView
-
-    init(webView: WKWebView) {
-        self.webView = webView
-    }
-
-    @MainActor
-    init(bridge: WebViewReflowBridge) {
-        self.webView = bridge.webView
-    }
-
-    var body: some View {
-        _BookWebViewContainer(webView: webView)
-    }
+    let bridge: WebViewReflowBridge
+    let selectionMenu: @MainActor () -> ReaderSelectionMenu?
+    let allowsPageZoom: Bool
+    var body: some View { BookWebViewContainer(bridge: bridge, selectionMenu: selectionMenu, allowsPageZoom: allowsPageZoom) }
 }
 
-#if os(iOS) || os(tvOS) || os(visionOS)
-private struct _BookWebViewContainer: UIViewRepresentable {
-    let webView: WKWebView
-
-    func makeUIView(context _: Context) -> WKWebView { webView }
-    func updateUIView(_: WKWebView, context _: Context) {}
-}
-#elseif os(macOS)
-private struct _BookWebViewContainer: NSViewRepresentable {
-    let webView: WKWebView
-
-    func makeNSView(context _: Context) -> WKWebView { webView }
-    func updateNSView(_: WKWebView, context _: Context) {}
+#if os(visionOS)
+struct BookWebViewContainer: UIViewRepresentable {
+    let bridge: WebViewReflowBridge
+    let selectionMenu: @MainActor () -> ReaderSelectionMenu?
+    let allowsPageZoom: Bool
+    func makeUIView(context: Context) -> WKWebView { bridge.webView }
+    func updateUIView(_ view: WKWebView, context: Context) {
+        (view as? ReaderSelectionWebView)?.selectionMenu = selectionMenu
+        view.scrollView.pinchGestureRecognizer?.isEnabled = allowsPageZoom
+    }
 }
 #endif
-
 #endif

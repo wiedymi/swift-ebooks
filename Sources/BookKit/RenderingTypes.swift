@@ -34,6 +34,7 @@ public struct Theme: Sendable, Equatable, Hashable, Codable {
 
 public struct Typography: Sendable, Equatable, Hashable, Codable {
     public var fontFamily: String
+    public var fallbackFontFamilies: [String]
     public var fontSize: Double
     public var lineHeight: Double
     public var letterSpacing: Double
@@ -42,12 +43,34 @@ public struct Typography: Sendable, Equatable, Hashable, Codable {
         fontFamily: String = "-apple-system",
         fontSize: Double = 18,
         lineHeight: Double = 1.5,
-        letterSpacing: Double = 0
+        letterSpacing: Double = 0,
+        fallbackFontFamilies: [String] = []
     ) {
         self.fontFamily = fontFamily
+        self.fallbackFontFamilies = fallbackFontFamilies
         self.fontSize = max(fontSize, 10)
         self.lineHeight = max(lineHeight, 1)
         self.letterSpacing = letterSpacing
+    }
+
+    private enum CodingKeys: String, CodingKey { case fontFamily, fontSize, lineHeight, letterSpacing, fallbackFontFamilies }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(fontFamily: try values.decode(String.self, forKey: .fontFamily),
+                  fontSize: try values.decode(Double.self, forKey: .fontSize),
+                  lineHeight: try values.decode(Double.self, forKey: .lineHeight),
+                  letterSpacing: try values.decode(Double.self, forKey: .letterSpacing),
+                  fallbackFontFamilies: try values.decodeIfPresent([String].self, forKey: .fallbackFontFamilies) ?? [])
+    }
+
+    var cssFontFamilies: String {
+        ([fontFamily] + fallbackFontFamilies).map { family in
+            if ["serif", "sans-serif", "monospace", "system-ui", "-apple-system"].contains(family) { return family }
+            return "\"" + family.replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+                .replacingOccurrences(of: "\n", with: " ").replacingOccurrences(of: "\r", with: " ") + "\""
+        }.joined(separator: ", ")
     }
 
     public static let `default` = Typography()

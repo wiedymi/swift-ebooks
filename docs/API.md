@@ -37,6 +37,14 @@ An already parsed or programmatically constructed model can start a session:
 let reader = try await BookReader(book: book)
 ```
 
+## Library metadata
+
+`book.metadata` exposes optional `summary`, `series`, `seriesPosition`, and
+`coverAssetID` fields. EPUB supports standard series collection metadata and
+Calibre series fields. FB2 uses its title information; CBZ uses ComicInfo.
+Missing metadata remains `nil`. Series positions must be finite and between
+zero and 1,000,000. `coverAssetID` refers to an asset in `book.assets`.
+
 ## Configuration
 
 ```swift
@@ -342,8 +350,14 @@ if let cue = parts.first {
 
 ```swift
 BookReaderView(reader: reader, pageTurnGesture: .disabled)
-    .selectionActions { selection in
-        Button("Read from here") { reader.speech.start(from: selection.locator) }
+    .textMagnification(fontSizeRange: 12...40)
+    .selectionMenuActions([
+        ReaderSelectionMenuAction(id: "read-aloud", title: "Read from here", systemImage: "speaker.wave.2") { selection in
+            reader.speech.start(from: selection.locator)
+        }
+    ])
+    .onDecorationTap { event in
+        // Find the host annotation by event.id and present its editor.
     }
     .fixedPageOverlay { page in
         Text("Page \(page.pageIndex + 1)")
@@ -351,8 +365,23 @@ BookReaderView(reader: reader, pageTurnGesture: .disabled)
     }
 ```
 
-Selection controls appear at the bottom of the view; system copy controls remain
-available. Your app supplies their labels, style, and actions. Automatic page
+`selectionMenuActions` adds actions to the native WebKit and PDFKit text menus
+on iOS, macOS, and visionOS. System actions remain available. Each action receives
+the selection captured when the menu was built, so menu dismissal cannot change
+its target. The host supplies localized titles and owns any asynchronous work.
+The existing `selectionActions` modifier remains available for optional SwiftUI
+overlay controls.
+
+`onDecorationTap` reports a tapped mark. User highlights consume reflow page taps
+and links; where highlights overlap, the last applied user mark receives the tap.
+Search and speech marks do not block page controls. Highlight spans also support
+keyboard activation. PDF page gestures skip host highlight annotations.
+
+WebKit selection text and background colors follow the reader theme. Native iOS
+selection handles also adapt to that theme. Opaque hex decoration backgrounds
+without a text color get the higher-contrast black or white foreground. Explicit
+text colors remain under host control. PDFKit retains document text and native
+selection rendering. Automatic page
 swipes are disabled during selection, scrolling mode, and VoiceOver. Explicit
 `.swipe` enables swipes in scrolling mode; `.disabled` leaves page turning to the app.
 
@@ -411,3 +440,72 @@ surfaces for hosts that intentionally replace the default presentation.
 Malformed or protected content throws `BookError`. Recoverable parser issues are
 reported through `Book.diagnostics`. Presentation, storage, and speech errors are
 also available through `reader.lastError` and the event stream.
+
+### Reader tap controls
+
+`BookReaderView(reader:onCenterTap:)` turns pages from the left and right quarters
+in paginated content. The callback lets the host show or hide its controls.
+Reflow taps on links, form controls, or selected text keep their normal behavior.
+Native panning is disabled for paginated reflow so a swipe cannot both scroll and
+issue a second page turn. Scroll mode keeps native vertical scrolling.
+
+### Page layout and transitions
+
+`ReaderPreferences.pageColumns` accepts `.single` or `.automatic`.
+Automatic uses two columns when each column can hold at least 16 em
+and 280 points of text. Narrow windows use one column. This setting applies to
+paginated reflow content, not fixed pages or PDFs.
+
+`ReaderPreferences.pageTransition` accepts `.none`, `.slide`, or `.curl`.
+On iOS, macOS, and tvOS, paginated WebKit content uses temporary page snapshots
+for explicit next/previous turns, including chapter boundaries. Slide lasts
+240 ms. Curl uses Core Image's page-curl-with-shadow filter on Metal for 460 ms;
+backward turns play the incoming sheet in reverse. A completed swipe or tap
+starts the effect; the fold does not track the finger during a drag. PDF and
+bitmap page viewers retain their own presentation.
+
+Paginated browser movement uses explicit instant scrolling and whole-page
+offsets. Position reports and last-page measurement retain those page edges;
+only the native image surface animates the turn.
+
+Reduced Motion and continuous scrolling disable these effects. Restoring a
+position, searching, changing preferences, and resizing do not animate. A new
+turn can interrupt an animation; input received during snapshot capture and
+navigation is coalesced. Snapshots are limited to about two million pixels each
+and a 750 ms wait. If the view is hidden, Metal is unavailable, or a snapshot
+fails, navigation completes without animation. Snapshots and display updates
+are released when the turn ends, the view detaches, or the session closes.
+
+Saved preferences without the new fields use a single column and Slide.
+An explicit `.none` value remains disabled.
+The host can pass both values to `ReaderPreferences` and apply them with
+`reader.setPreferences(_:)`.
+
+### Host fonts
+
+`Typography.fallbackFontFamilies` supplies ordered fallback families after
+`fontFamily`. Saved typography without this field reads an empty fallback list.
+Names are escaped as CSS strings; CSS generic families remain unquoted.
+
+Before opening a reader, set `Configuration.configureWebViewConfiguration` to
+install a trusted `WKURLSchemeHandler` for host-owned font resources. Keep the
+reader's existing network, script, and navigation policies. Supply `@font-face`
+rules with the host theme's `customCSS`; keep file access restricted to fonts
+that the host has validated. The bridge updates page measurements after fonts
+load. Fixed-page and PDF text remain part of their source files.
+
+`textMagnification(fontSizeRange:)` maps a pinch to the saved typography size in reflowable content. Native page zoom is disabled on that surface; fixed layouts retain page zoom. Text size changes continuously during the pinch, without whole-point rounding. Updates run in order and keep only the latest pending size while rendering is busy. The range is supplied by the host.
+
+System speech reports `speechLanguageUnavailable` and `speechVoiceUnavailable` as distinct `BookError` cases. Hosts can show localized recovery text without matching technical error strings.
+
+### Embedded image taps
+
+Use `BookReaderView(reader: reader).onImageTap { asset in ... }` to present host image UI.
+The callback supplies the book-owned image asset and embedded bytes. It applies to
+unlinked images in HTML content. Linked images retain link policy, and selection
+keeps priority. Without the callback, taps keep the default page/control behavior.
+PDF and comic pages retain their native page zoom.
+
+The reflow viewport disables browser
+page scaling while this modifier is active, including publication viewport overrides.
+Fixed-layout pages and host image viewers retain page zoom.
