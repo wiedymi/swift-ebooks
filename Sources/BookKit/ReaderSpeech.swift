@@ -5,7 +5,8 @@ import Foundation
 public struct SpeechOptions: Sendable, Equatable {
     public var voiceIdentifier: String?
     public var language: String?
-    /// Uses the system speech rate scale. Values are clamped by the system engine.
+    /// Uses the selected engine’s rate scale. The default is the system speech rate.
+    /// A custom engine defines its supported values and clamps or rejects invalid input.
     public var rate: Float
     public var pitch: Float
     public var volume: Float

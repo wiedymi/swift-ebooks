@@ -23,6 +23,8 @@ public struct ContentProtection: Sendable, Equatable, Hashable, Codable {
 }
 
 public enum BookError: Error, Sendable, Equatable {
+    case speechLanguageUnavailable(String)
+    case speechVoiceUnavailable(String)
     case unsupportedFormat
     case protectedContent(ContentProtection)
     case invalidContainer(String)
@@ -43,6 +45,10 @@ public enum BookError: Error, Sendable, Equatable {
 extension BookError: LocalizedError {
     public var errorDescription: String? {
         switch self {
+        case .speechLanguageUnavailable:
+            return "Read Aloud is not available for this language on this device."
+        case .speechVoiceUnavailable:
+            return "The selected voice is not available on this device."
         case .unsupportedFormat:
             return "This ebook format or encoding is not supported."
         case let .protectedContent(protection):

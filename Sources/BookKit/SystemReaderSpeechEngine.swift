@@ -37,12 +37,12 @@ public final class SystemReaderSpeechEngine: NSObject, ReaderSpeechEngine, AVSpe
         let id = utterance.id
         if let identifier = options.voiceIdentifier {
             guard let voice = AVSpeechSynthesisVoice(identifier: identifier) else {
-                throw BookError.renderingFailed("The requested speech voice is unavailable")
+                throw BookError.speechVoiceUnavailable(identifier)
             }
             utterance.voice = voice
         } else if let language = options.language {
             guard let voice = AVSpeechSynthesisVoice(language: language) else {
-                throw BookError.renderingFailed("The requested speech language is unavailable")
+                throw BookError.speechLanguageUnavailable(language)
             }
             utterance.voice = voice
         }
