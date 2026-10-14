@@ -21,9 +21,13 @@ All included references are permissive-licensed (MIT/BSD/Apache), compatible wit
 
 ## Update Procedure
 
+Reference code is optional. Each submodule has `update = none` in `.gitmodules`,
+so SwiftPM and normal Git submodule updates skip it. To download the pinned
+references or update one reference, use an explicit checkout:
+
 ```bash
-git submodule update --init --recursive
-git submodule update --remote refs/<name>
+git submodule update --init --recursive --checkout
+git submodule update --remote --checkout refs/<name>
 ```
 
 If adding new references, keep the same permissive license policy and record the decision in `docs/REFERENCE_SURVEY.md`.

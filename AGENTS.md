@@ -42,7 +42,6 @@ Keep [API examples](docs/API.md) aligned with public code.
 Use Swift 6.2+ and Xcode with the required Apple SDKs. From the repository root:
 
 ```sh
-git submodule update --init --recursive
 ./scripts/verify_corpus.sh
 swift test --filter <AffectedTests>
 swift test

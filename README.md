@@ -91,8 +91,10 @@ HTML text parsing uses [SwiftSoup](https://github.com/scinfu/SwiftSoup).
 
 ## Validate
 
+Reference submodules are optional and are not needed to build or validate BookKit.
+See [reference setup](refs/README.md) to download them manually.
+
 ```bash
-git submodule update --init --recursive
 ./scripts/verify_corpus.sh
 swift test
 swift build -c release

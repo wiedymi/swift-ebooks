@@ -3,7 +3,6 @@
 Run from the repository root:
 
 ```bash
-git submodule update --init --recursive
 ./scripts/verify_corpus.sh
 swift test
 swift build -c release
